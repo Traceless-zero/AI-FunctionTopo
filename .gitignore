@@ -1,5 +1,6 @@
-# 工作区：每单业务的副本与产物（现场态，不入库）
-ff_workspace/
+# 工作区：现场态不入库；orders 为随库样例（转正）
+ff_workspace/*
+!ff_workspace/orders/
 # 待删除暂存
 to_delete/
 # WorkBuddy 会话记忆

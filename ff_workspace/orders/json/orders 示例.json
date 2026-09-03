@@ -1,0 +1,118 @@
+{
+  "schema": "functionflow/v1",
+  "projectRoot": "ff_workspace/orders/scripts/",
+  "language": "python",
+  "nodes": [
+    {
+      "id": "n1",
+      "data": {
+        "function": "send_confirmation",
+        "file": "ff_workspace/orders/scripts/notify.py",
+        "line": 15,
+        "endLine": 29,
+        "signature": "(order: Order) -> None",
+        "comment": "异步发送确认邮件 + 短信，失败重试 3 次。"
+      }
+    },
+    {
+      "id": "n2",
+      "data": {
+        "function": "_render",
+        "file": "ff_workspace/orders/scripts/notify.py",
+        "line": 32,
+        "endLine": 37,
+        "signature": "(order: Order) -> Rendered",
+        "comment": "渲染邮件正文与短信模板。"
+      }
+    },
+    {
+      "id": "n3",
+      "data": {
+        "function": "compute_total",
+        "file": "ff_workspace/orders/scripts/pricing.py",
+        "line": 8,
+        "endLine": 25,
+        "signature": "(cart: ValidatedCart, user: User) -> Money",
+        "comment": "商品小计 + 税费 - 优惠；VIP 用户享额外折扣。"
+      }
+    },
+    {
+      "id": "n4",
+      "data": {
+        "function": "_coupon_discount",
+        "file": "ff_workspace/orders/scripts/pricing.py",
+        "line": 28,
+        "endLine": 30,
+        "signature": "(cart: ValidatedCart, subtotal: Decimal) -> Decimal",
+        "comment": "优惠券折扣，占位实现。"
+      }
+    },
+    {
+      "id": "n5",
+      "data": {
+        "function": "load_user",
+        "file": "ff_workspace/orders/scripts/service.py",
+        "line": 12,
+        "endLine": 17,
+        "signature": "(user_id: int) -> User",
+        "comment": "按 user_id 加载用户，不存在时抛 UserNotFound。"
+      }
+    },
+    {
+      "id": "n6",
+      "data": {
+        "function": "validate_cart",
+        "file": "ff_workspace/orders/scripts/service.py",
+        "line": 28,
+        "endLine": 42,
+        "signature": "(cart: Cart) -> ValidatedCart",
+        "comment": "校验库存、价格与上下架状态，返回校验后快照。"
+      }
+    },
+    {
+      "id": "n7",
+      "data": {
+        "function": "_order_no",
+        "file": "ff_workspace/orders/scripts/service.py",
+        "line": 52,
+        "endLine": 54,
+        "signature": "() -> str",
+        "comment": "生成全局唯一订单号。"
+      }
+    },
+    {
+      "id": "n8",
+      "data": {
+        "function": "create_order",
+        "file": "ff_workspace/orders/scripts/service.py",
+        "line": 60,
+        "endLine": 88,
+        "signature": "(user: User, cart: ValidatedCart, total: Money) -> Order",
+        "comment": "落库创建订单、扣库存、生成支付单，事务内执行。"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "from": "n1",
+      "to": "n2"
+    },
+    {
+      "id": "e2",
+      "from": "n3",
+      "to": "n4"
+    },
+    {
+      "id": "e3",
+      "from": "n8",
+      "to": "n1"
+    },
+    {
+      "id": "e4",
+      "from": "n8",
+      "to": "n7"
+    }
+  ],
+  "intent": "人工修改意图"
+}

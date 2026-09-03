@@ -1,0 +1,5 @@
+# 可选依赖：仅 extract_flow_ts.py（JS/TS 源码提取）需要；ast 版纯标准库零依赖
+tree-sitter>=0.23
+tree-sitter-python>=0.21
+tree-sitter-javascript>=0.21
+tree-sitter-typescript>=0.21

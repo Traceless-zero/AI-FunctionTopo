@@ -425,35 +425,35 @@ const {
 const FAN_WARN = 5, FAN_HOT = 10;
 const FOCUS_HOPS = 1;   // 聚焦跳数：±N 跳上下游
 
-/* ---------- 默认画布数据：src/orders/ 真实提取基线（8 节点 4 边） ---------- */
+/* ---------- 默认画布数据：ff_workspace/orders/scripts/ 真实提取基线（8 节点 4 边） ---------- */
 const EMBEDDED_FLOW = {
   schema: "functionflow/v1",
-  projectRoot: "src/orders/",
+  projectRoot: "ff_workspace/orders/scripts/",
   language: "python",
   nodes: [
     { id: "n1", type: "function", position: { x: 290, y: 40 },
-      data: { function: "send_confirmation", file: "src/orders/notify.py", line: 15, endLine: 29,
+      data: { function: "send_confirmation", file: "ff_workspace/orders/scripts/notify.py", line: 15, endLine: 29,
         signature: "(order: Order) -> None", comment: "异步发送确认邮件 + 短信，失败重试 3 次。" } },
     { id: "n2", type: "function", position: { x: 540, y: 250 },
-      data: { function: "_render", file: "src/orders/notify.py", line: 32, endLine: 37,
+      data: { function: "_render", file: "ff_workspace/orders/scripts/notify.py", line: 32, endLine: 37,
         signature: "(order: Order) -> Rendered", comment: "渲染邮件正文与短信模板。" } },
     { id: "n3", type: "function", position: { x: 40, y: -65 },
-      data: { function: "compute_total", file: "src/orders/pricing.py", line: 8, endLine: 25,
+      data: { function: "compute_total", file: "ff_workspace/orders/scripts/pricing.py", line: 8, endLine: 25,
         signature: "(cart: ValidatedCart, user: User) -> Money", comment: "商品小计 + 税费 - 优惠；VIP 用户享额外折扣。" } },
     { id: "n4", type: "function", position: { x: 290, y: 250 },
-      data: { function: "_coupon_discount", file: "src/orders/pricing.py", line: 28, endLine: 30,
+      data: { function: "_coupon_discount", file: "ff_workspace/orders/scripts/pricing.py", line: 28, endLine: 30,
         signature: "(cart: ValidatedCart, subtotal: Decimal) -> Decimal", comment: "优惠券折扣，占位实现。" } },
     { id: "n5", type: "function", position: { x: 40, y: 145 },
-      data: { function: "load_user", file: "src/orders/service.py", line: 12, endLine: 17,
+      data: { function: "load_user", file: "ff_workspace/orders/scripts/service.py", line: 12, endLine: 17,
         signature: "(user_id: int) -> User", comment: "按 user_id 加载用户，不存在时抛 UserNotFound。" } },
     { id: "n6", type: "function", position: { x: 40, y: 355 },
-      data: { function: "validate_cart", file: "src/orders/service.py", line: 28, endLine: 42,
+      data: { function: "validate_cart", file: "ff_workspace/orders/scripts/service.py", line: 28, endLine: 42,
         signature: "(cart: Cart) -> ValidatedCart", comment: "校验库存、价格与上下架状态，返回校验后快照。" } },
     { id: "n7", type: "function", position: { x: 290, y: 460 },
-      data: { function: "_order_no", file: "src/orders/service.py", line: 52, endLine: 54,
+      data: { function: "_order_no", file: "ff_workspace/orders/scripts/service.py", line: 52, endLine: 54,
         signature: "() -> str", comment: "生成全局唯一订单号。" } },
     { id: "n8", type: "function", position: { x: 40, y: 565 },
-      data: { function: "create_order", file: "src/orders/service.py", line: 60, endLine: 88,
+      data: { function: "create_order", file: "ff_workspace/orders/scripts/service.py", line: 60, endLine: 88,
         signature: "(user: User, cart: ValidatedCart, total: Money) -> Order", comment: "落库创建订单、扣库存、生成支付单，事务内执行。" } },
   ],
   edges: [
@@ -1271,6 +1271,7 @@ function FlowCanvas() {
           <${NodeActionsCtx.Provider} value=${{ viewCode: showCode, focus: focusNode, codeViewId: codeView && codeView.nodeId, deleteEdge: (id) => setEdges((eds) => eds.filter((e) => e.id !== id)) }}>
         <${Flow} key=${graphKey} className="ff-canvas"
           nodes=${nodes} edges=${animatedEdges} nodeTypes=${nodeTypes} edgeTypes=${edgeTypes}
+          deleteKeyCode=${["Backspace", "Delete"]}
               onNodesChange=${onNodesChange} onEdgesChange=${onEdgesChange} onConnect=${onConnect}
               onNodeDoubleClick=${onNodeDoubleClick} onEdgeDoubleClick=${onEdgeDoubleClick}
               onNodeContextMenu=${(ev, node) => { ev.preventDefault(); setCtxMenu({ nodeId: node.id, x: ev.clientX, y: ev.clientY }); }}
@@ -1360,7 +1361,7 @@ function FlowCanvas() {
                   <button className="ff-btn" onClick=${openBlankTab}
                           title="新开一个空白标签页，可用「＋节点」手工编排 to-be 函数节点；已有图会保留在自己的标签里">＋ 新增空画布</button>
                 </div>
-                <div className="ff-empty-hint">http 服务下也可用 ?src=ff_workspace/<订单>/json/xxx.json 直载提取产物</div>
+                <div className="ff-empty-hint">http 服务下也可用 ?src=ff_workspace/（订单）/json/xxx.json 直载提取产物</div>
               </div>
             </div>
           `}
@@ -1382,7 +1383,7 @@ function FlowCanvas() {
                 </div>
                 <div className="ff-help-body">
                 <ul>
-                  <li><b>导入图</b>：把 <code>functionflow/v1</code> JSON 直接拖进窗口，或点工具栏「导入 JSON」——都会开成<b>新图层</b>，不覆盖已打开的图；http 服务下可用 <code>?src=ff_workspace/<订单>/json/xxx.json</code> 直载。空态遮罩里也可「载入 orders 示例」，或「＋ 新增空画布」从零编排。</li>
+                  <li><b>导入图</b>：把 <code>functionflow/v1</code> JSON 直接拖进窗口，或点工具栏「导入 JSON」——都会开成<b>新图层</b>，不覆盖已打开的图；http 服务下可用 <code>?src=ff_workspace/（订单）/json/xxx.json</code> 直载。空态遮罩里也可「载入 orders 示例」，或「＋ 新增空画布」从零编排。</li>
                   <li><b>图层面板</b>：左侧栏，一个载入文件 = 一个图层；点击切换审查不同图流（origin / after 版本对照，py1 / py2 / py3 关联），每个图层记住自己的缩放与平移，双击图层名可重命名，✕ 关闭单个，‹ 把手可收起面板。</li>
                   <li><b>节点</b>：<code>ƒ</code> 函数名 + 签名 + 批注 + 文件位置。右上角 <b>◎</b> 聚焦该函数的上下游，<b>{ }</b> 在右侧栏看源码（命中行号区间高亮，再点一次取消展示）；画布新增的 to-be 节点点 <b>{ }</b> 会提示「暂无源码」。</li>
                   <li><b>右键节点</b>：删除节点 / 复制节点（复制后只选中新副本，边一并复制）/ 修改节点信息（函数名、签名、批注；文件与行号属源码派生值，不在面板内修改）。</li>
@@ -1393,7 +1394,7 @@ function FlowCanvas() {
                   <li><b>重排布局</b>：按真实节点高度把提取器输出的「金字塔」高塔列展开成横向方块。导入后自动跑一次；手工拖乱或新加节点后，可再点一次重新规整。</li>
                   <li><b>大图性能</b>：边数超过 30 条时自动转为实线（仅选中边保留流动动画），拖拽节点时跳过小地图重算 —— 加载 core.json 这类大图更顺滑。</li>
                   <li><b>小地图</b>：左下角，亮区即当前视口，暗区为画布其余；滚轮缩放、拖拽平移。</li>
-                  <li><b>导出 / 重置</b>：「导出 JSON」把当前图存回 <code>functionflow/v1</code>，可再次导入或喂给 AI（已剔除时间戳、重复类型、占位零值等噪音；坐标保留，回导时用于恢复拓扑分层）。「清空画布」清空当前图层内容后停在空画布（其他图层不受影响，需二次确认）；「新建画布」新开一个空白图层；「重置图层」把当前图层还原成导入时的初始 JSON（丢弃手工改动）。</li>
+                  <li><b>导出 / 重置</b>：「导出 JSON」把当前图存回 <code>functionflow/v1</code>，可再次导入或喂给 AI（已剔除时间戳、重复类型、占位零值等噪音；坐标不进 JSON，布局由画布按调用图拓扑实时计算）。「清空画布」清空当前图层内容后停在空画布（其他图层不受影响，需二次确认）；「新建画布」新开一个空白图层；「重置图层」把当前图层还原成导入时的初始 JSON（丢弃手工改动）。</li>
                 </ul>
                 </div>
               </div>
