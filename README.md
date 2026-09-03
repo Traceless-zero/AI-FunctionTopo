@@ -1,53 +1,103 @@
----
-name: aift-sandbox-refactor
-description: FunctionFlow 沙箱工作流 · 文件级改动闭环。当用户要求"复制代码文件到工作区/沙箱里改"、"画布改动落到副本"、"改好了合并回原文件"时使用。核心合同：沙箱副本是唯一编辑区，原文件在回归确认前只读；manifest 是原路径 ↔ 沙箱路径的唯一映射权威。触发词：沙箱、工作区、复制文件改、改动回归、合并回原文件、ff_workspace。
----
+# AI-FunctionTopo
 
-# FunctionFlow 沙箱工作流 · 文件级改动闭环
+把代码函数块可视化成 workflow 节点，用于审查代码和规划重构，并把画布上重排好的数据流导出 JSON 交给 AI 照图修改源码——「人定方向、AI 干活」。
 
-## 合同（已敲定，不要重新解释）
-- 工作区副本是**唯一编辑区**；原文件在回归（merge）确认前**只读**，严禁任何写入。
-- `ff_workspace/manifest.json` 是映射权威：原路径 ↔ 沙箱路径 ↔ 状态（draft / ready_to_merge / merged）。无 manifest 条目的文件不参与本工作流。
-- 代码改动的语义依据是 `functionflow/v1` 的 to-be JSON（画布编排产物）；JSON → diff 的生成由 `aift-refactor-diff` skill 承担，本 skill 只管**文件从哪来、改动落在哪、何时回归**。
-- 副本内保持原项目的相对路径结构，回归时按 manifest 一对一写回。
-- 副本没有备份/回滚层：改错就**重新从原文件复制覆盖**（即重置），manifest 不变；原文件在回归前始终是干净的参照物。
-- 验证职责在本 skill：结构验证与行为验证（见下）都**不需要把沙箱文件放回原位**。
+**AI-FunctionTopo: function-level code visualization & AI refactoring collaboration. Extract functions to a canvas, reroute data flows, export JSON for AI to rewrite code. Buildless, zero deps.**
 
-## 工作区结构
+## 快速开始（免构建，零 node_modules）
 
-`ff_workspace/` 是**默认的 JSON + 代码副本工作与存储区**，两目录平铺、不设更深层业务目录：
+画布是单文件 `canvas.html` + `vendor/` 静态库（React/ReactFlow UMD，共 ~306KB），浏览器直接跑：
+
+- **双击打开 `canvas.html`**：默认出导入遮罩——把 JSON 拖进窗口 / 点「选择文件」/ 载入 orders 示例；
+- 或起静态服务用深链直载提取产物：
+  `python -m http.server 8642` → <http://127.0.0.1:8642/canvas.html?src=ff_workspace/orders/json/orders%20示例.json>
+- 把 JSON 文件**拖进窗口** = 导入。
+
+> 源码查看用 `fetch()` 读文件，`file://` 直接打开会被浏览器拦截。除源码栏外，其余功能不受影响。
+
+## 从源码生成图
+
+```bash
+python extract_flow.py ff_workspace/orders/scripts                # ast 版（纯标准库零依赖）
+python extract_flow_ts.py ff_workspace/orders/scripts -o out.json # Tree-sitter 版（py/js/ts，与 ast 版产出全等）
+python extract_flow_ts.py ff_workspace/samples/aimh --focus query_anchors --hops 1   # 子图：回 20-30 节点可读规模
+python extract_flow_ts.py ff_workspace/samples/aimh --focus _conn --dir up --hops 2  # 改动影响面（上游调用方）
+python extract_flow.py ff_workspace/orders/scripts --strip-position  # AI 消费形态（剥离画布坐标）
+```
+
+Tree-sitter 版依赖：`pip install tree-sitter tree-sitter-python tree-sitter-javascript tree-sitter-typescript`
+
+> 注：`ff_workspace/samples/aimh` 若不在本地（工作区不入 git），可对任意真实项目源码跑同样命令。
+
+## 画布功能
+
+- 函数节点黑盒：函数名 / 签名 / 注释(docstring) / 文件位置行号，左入右出端口
+- 拖拽、缩放（5%–250%）、框选、小地图、动态数据流边；选中后 Backspace/Delete 删除
+- **＋ 节点**：画布上直接新增 to-be 函数节点（编排/新函数）
+- **◎ 聚焦**：只显示该函数 ±1 跳上下游（诱导子图）；聚焦态导出 = 只导聚焦子图 + intent
+- **双击节点** = 编辑批注（comment）；**双击边** = 编辑标签（label）
+- **右侧栏**：改动意图（intent 字段）+ 源码审查（`{ }` 按钮，行号区间高亮）
+- **流入预警**（图论叫扇入）：≥5 琥珀、≥10 红色；人工补边后实时重算
+- 隐藏孤岛节点（默认开，画布新增节点豁免）
+- 多图层 / 右键菜单 / 抽屉侧栏 / 空态导入遮罩
+
+## AI 改码闭环
 
 ```
-ff_workspace/
-├── manifest.json     # 映射与状态权威（原路径 ↔ 副本路径 ↔ 状态）
-├── scripts/          # 代码副本与源码素材（副本保持原相对路径；工作副本放 scripts/<run>/ 子目录）
-│   ├── orders-run/   # 例：orders 单的副本（唯一可编辑区）
-│   └── orders|orders_after|aimh   # 样例源码（只读参照）
-└── json/             # 全部 JSON（工作产物 ff_ws-* 与样例 functionflow-* 都在这）
+源码 --提取--> origin JSON --画布重排/聚焦/写 intent--> to-be JSON
+     --交 AI（读图忽略 position 即可）--> AI 照图改源码（一期只限：新增编排函数串联既有函数）
+     --再提取--> after JSON --机器 diff--> 差集 == 画布意图 即闭环成功
 ```
 
-- manifest 为映射权威：`entries[].sandbox` 指向 `ff_workspace/scripts/...`；无 manifest 条目的文件不参与本工作流。
-- 新 JSON（提取产物 / to-be / after）一律落 `ff_workspace/json/`；工作产物用 `ff_ws-` 前缀，与 `functionflow-` 样例区分。
+配套 skill：`skills/aift-refactor-diff`（JSON → 收敛 diff）+ `skills/aift-sandbox-refactor`（ff_workspace 沙箱闭环，副本编辑、原文件只读、回归需确认）。
 
-## 执行流程
+## 目录结构
 
-1. **建仓**：复述待复制文件清单，等用户确认 → 代码副本复制进 `ff_workspace/scripts/<run>/`（run 名与业务相关，如 orders-run；保持原相对路径或按需平铺）→ 写 manifest（status: draft）。
-2. **映射**：对副本跑 `extract_flow*.py` → JSON 落 `ff_workspace/json/`（文件名 = 图层名）→ 用户导入画布（开新图层，原图层不受影响）。
-3. **改动循环**（可多轮）：画布导出 to-be JSON → 交 `aift-refactor-diff` 阅读理解并给收敛方案 → 用户同意方案后由其把改动**写入副本文件**（写入范围 = manifest 映射的工作区路径，原文件不动）→ 可重新提取 JSON 刷新图层对照。每轮结束 manifest 状态保持 draft。
+```
+functionflow/
+├── canvas.html              # 主画布（项目核心，单文件 React + React Flow）
+├── extract_flow.py          # Python 源码 → functionflow/v1 JSON
+├── extract_flow_ts.py       # TS / JS 源码 → functionflow/v1 JSON
+├── skills/                  # aift 双 skill 权威源
+├── ff_workspace/            # 默认工作与存储区：<订单>/scripts + json（gitignore，不入库）
+└── vendor/                  # canvas.html 的本地依赖（react / reactflow / htm）
+```
 
-### 验证（不需要把文件放回原位）
-- **结构验证**（零执行）：对副本重跑提取器 → 新 JSON 与 to-be JSON 对照，差集 == 画布意图即改动正确。
-- **行为验证**（遮蔽运行）：`PYTHONPATH="<沙箱绝对路径><分隔符><项目根绝对路径>"`（Windows 分隔符 `;`）且**必须避免 CWD 抢先**——从项目根直接 `python <入口>` 时 `sys.path[0]=''`（CWD）排在 PYTHONPATH 之前，原文件永远先命中，遮蔽失效（2026-09-03 实测踩坑）。两种可靠姿势：
-  ① 从中性目录跑：`cd ff_workspace && PYTHONPATH="<abs scripts/<run>>;<abs 项目根>" python <入口>`；
-  ② Python ≥3.11 用 `-P` 去 CWD 前置：`PYTHONPATH="ff_workspace/scripts/<run>;<abs 项目根>" python -P <入口>`。
-  import 时改过的模块命中工作区副本，未复制的模块经 namespace 包合并自动回落原项目路径；原文件全程未动，跑完无需还原。注意：存在 `__init__.py` 的常规包会整包遮蔽，沙箱需带全包链或项目为 namespace 包。
-- 兜底：遮蔽确实跑不通的项目结构，才考虑临时换入换出（swap 后立即还原），不作为默认流程。
-- 沙箱（sandbox）一词在文档历史版本中即指 `scripts/<run>/` 副本区，含义不变。
-4. **验收**：展示 副本 vs 原文件 的 unified diff + 受影响函数新行号表；用户确认后进入回归。
-5. **回归**：副本内容写回原路径 → manifest 状态改 merged → 回报"哪些文件已回归、哪些仍在草稿"。
+## JSON 契约：functionflow/v1
 
-## 红线
-- 严禁在回归确认前写入原文件（包括"顺手修复""格式化"）。
-- 严禁静默覆盖：回归前必须完整展示 diff 并获用户显式确认。
-- 严禁改动 `ff_workspace/` 与 manifest 指定路径之外的任何文件；`scripts/` 下的样例源码目录（orders / orders_after / aimh）为只读参照。
-- 项目根不再设 json/ 与 src/：样例源码与全部 JSON 分居 `ff_workspace/scripts/` 与 `ff_workspace/json/`。
+**一份 JSON，两种用途**：能导回画布，也能直接喂给 AI 改码。
+
+```json
+{
+  "schema": "functionflow/v1",
+  "generatedAt": "2026-09-02T07:10:00.000Z",
+  "projectRoot": "src/orders/",
+  "language": "python",
+  "intent": "人工意图层：为什么这么改（画布编排后加入，机械提取不产）",
+  "nodes": [
+    {
+      "id": "n1",
+      "type": "function",
+      "position": { "x": 40, "y": 60 },
+      "data": {
+        "function": "Memory._conn",
+        "file": "src/aimh/hma_core.py",
+        "line": 1846,
+        "endLine": 1850,
+        "signature": "(self)",
+        "comment": "说明文字"
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "from": "n1", "to": "n2", "label": "user" }
+  ]
+}
+```
+
+类方法节点用限定名（`Memory._conn`）；函数体内嵌套 def 不收录（黑盒不展开）。
+position 是画布布局，AI 消费时忽略即可；`--strip-position` 可剥离省 token。
+
+## License
+
+MIT
