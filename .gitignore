@@ -1,0 +1,12 @@
+# 工作区：每单业务的副本与产物（现场态，不入库）
+ff_workspace/
+# 待删除暂存
+to_delete/
+# WorkBuddy 会话记忆
+.workbuddy/
+# Python
+__pycache__/
+*.pyc
+# 系统
+Thumbs.db
+Desktop.ini

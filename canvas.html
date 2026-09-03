@@ -1,0 +1,1477 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AI-FunctionTopo · 画布</title>
+<link rel="stylesheet" href="vendor/reactflow.css" />
+<style>
+  /* 沿用 demo.html 的暗色体系；shadcn 风格 CSS 变量本地定义，无构建依赖 */
+  :root {
+    --bg: #0e1116; --panel: #151a21; --card: #181e26; --card-head: #1c232c;
+    --border: #2a323d; --border-2: #3a4553; --text: #e6edf3; --dim: #8b949e;
+    --primary: #6b8afd; --amber: #e3b341; --red: #f85149; --blue: #79c0ff;
+  }
+  * { box-sizing: border-box; }
+  html, body, #root { height: 100%; margin: 0; padding: 0; }
+  body {
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg); color: var(--text); overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .ff-app { display: flex; flex-direction: column; height: 100vh; }
+  /* 图层面板（左侧抽屉，PS 图层面板式）：一个载入文件 = 一个图层，
+     竖排列表、点击激活、✕ 关闭；抽屉可收拉，canvas 宽度恒定 → 小地图零重算 */
+  .ff-layers {
+    position: absolute; left: 0; top: 0; bottom: 0; z-index: 15;
+    width: 190px; display: flex; flex-direction: column;
+    background: var(--panel); border-right: 1px solid var(--border);
+    box-shadow: 6px 0 24px rgba(0,0,0,.45);
+    transition: transform .25s ease;
+  }
+  .ff-layers.closed { transform: translateX(-100%); box-shadow: none; }
+  .ff-layers-head {
+    flex: none; display: flex; align-items: center; gap: 6px;
+    padding: 10px 12px 8px; font-size: 12px; color: var(--dim);
+  }
+  .ff-layers-head b { font-size: 12px; color: var(--text); }
+  .ff-layers-list {
+    flex: 1; min-height: 0; overflow-y: auto;
+    display: flex; flex-direction: column; gap: 2px; padding: 0 6px 10px;
+  }
+  .ff-layer-row {
+    display: flex; align-items: center; gap: 6px; padding: 7px 8px;
+    font-size: 12px; color: var(--dim); border-radius: 6px; cursor: pointer; user-select: none;
+  }
+  .ff-layer-row:hover { background: var(--card); color: var(--text); }
+  .ff-layer-row.active { background: rgba(107,138,253,.16); color: var(--text); }
+  .ff-layer-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ff-layer-x {
+    cursor: pointer; border: 0; background: transparent; color: var(--dim);
+    font-size: 11px; line-height: 1; padding: 2px 3px; border-radius: 4px;
+  }
+  .ff-layer-x:hover { color: #f85149; }
+  .ff-layer-rename {
+    flex: 1; min-width: 0; background: var(--card); border: 1px solid var(--primary);
+    border-radius: 4px; color: var(--text); font-size: 12px; padding: 2px 5px; outline: none;
+  }
+  /* 左抽屉把手：镜像右侧抽屉把手，挂在抽屉右缘，收起后仍露在屏幕左缘 */
+  .ff-layers-handle {
+    position: absolute; right: -22px; top: 50%; transform: translateY(-50%);
+    width: 22px; height: 52px; padding: 0;
+    border: 1px solid var(--border-2); border-left: 0;
+    border-radius: 0 12px 12px 0;
+    background: var(--panel); color: var(--dim);
+    font-size: 14px; line-height: 1; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 2px 0 8px rgba(0,0,0,.35);
+  }
+  .ff-layers-handle:hover { color: var(--text); background: var(--card-head); border-color: var(--dim); }
+  /* 抽屉打开时让位：小地图与控制钮右移（过渡与抽屉滑动同步），避免被左抽屉盖住 */
+  .ff-canvas-wrap .react-flow__minimap,
+  .ff-canvas-wrap .react-flow__controls { transition: left .25s ease; }
+  .ff-canvas-wrap.layers-open .react-flow__minimap { left: 204px !important; }
+  .ff-canvas-wrap.layers-open .react-flow__controls { left: 204px !important; }
+  .ff-main { flex: 1; display: flex; min-height: 0; position: relative; overflow: hidden; }
+  .ff-toolbar {
+    flex: none; display: flex; align-items: center; gap: 14px;
+    padding: 9px 16px; background: var(--panel); border-bottom: 1px solid var(--border);
+  }
+  .ff-brand { font-weight: 700; font-size: 15px; letter-spacing: .3px; }
+  .ff-brand span { color: var(--primary); }
+  .ff-stat { font-size: 12px; color: var(--dim); }
+  .ff-legend { font-size: 11px; color: var(--dim); display: flex; align-items: center; gap: 5px; }
+  .ff-legend .dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; }
+  .ff-legend .dot.warn { background: var(--amber); }
+  .ff-legend .dot.hot { background: var(--red); }
+  .ff-toggle {
+    margin-left: auto; display: flex; align-items: center; gap: 6px;
+    font-size: 12px; color: var(--dim); cursor: pointer; user-select: none;
+  }
+  .ff-toggle input { accent-color: var(--primary); cursor: pointer; }
+  .ff-actions { display: flex; gap: 8px; }
+  .ff-btn {
+    cursor: pointer; border: 1px solid var(--border-2); background: transparent;
+    color: var(--text); font-size: 12px; padding: 5px 12px; border-radius: 6px;
+  }
+  .ff-btn:hover { background: var(--card-head); border-color: var(--dim); }
+  .ff-btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+  .ff-btn.primary:hover { filter: brightness(1.1); }
+  .ff-btn.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+
+  .ff-canvas-wrap { flex: 1; min-height: 0; position: relative; }
+  .ff-canvas { width: 100%; height: 100%; }
+
+  /* 新增节点内嵌面板 */
+  .ff-addpanel {
+    position: absolute; top: 12px; right: 12px; z-index: 10; width: 280px;
+    background: var(--panel); border: 1px solid var(--border-2); border-radius: 8px;
+    padding: 12px; display: flex; flex-direction: column; gap: 8px;
+    box-shadow: 0 6px 24px rgba(0,0,0,.5);
+  }
+  .ff-addpanel-title { font-size: 12px; font-weight: 600; }
+  .ff-input {
+    width: 100%; background: var(--card); border: 1px solid var(--border-2);
+    border-radius: 6px; color: var(--text); font-size: 12px; padding: 6px 8px; outline: none;
+  }
+  .ff-input:focus { border-color: var(--primary); }
+  .ff-field-hint { font-size: 11px; color: var(--dim); line-height: 1.4; margin-top: 3px; }
+  .ff-addpanel-actions { display: flex; justify-content: flex-end; gap: 8px; }
+  .ff-btn:disabled { opacity: .45; cursor: not-allowed; }
+
+  /* 节点右键功能菜单（删除 / 复制 / 修改信息） */
+  .ff-ctx-mask { position: fixed; inset: 0; z-index: 60; }   /* 点菜单外区域关闭 */
+  .ff-ctx-menu {
+    position: fixed; z-index: 61; min-width: 168px;
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.45); padding: 4px;
+  }
+  .ff-ctx-item {
+    display: block; width: 100%; text-align: left; background: transparent; border: 0;
+    color: var(--text); padding: 8px 12px; border-radius: 5px; font-size: 13px; cursor: pointer;
+  }
+  .ff-ctx-item:hover { background: var(--primary); color: #fff; }
+  .ff-ctx-item.danger:hover { background: #f85149; color: #fff; }
+
+  /* ---------- 右侧栏：改动意图 + 源码审查（抽屉式：浮于画布之上滑入滑出，
+     画布宽度恒定 → 小地图/视口不会因收拉而重算抖动） ---------- */
+  .ff-sidebar {
+    position: absolute; right: 0; top: 0; bottom: 0; z-index: 15;
+    width: 360px; display: flex; flex-direction: column;
+    background: var(--panel); border-left: 1px solid var(--border);
+    box-shadow: -6px 0 24px rgba(0,0,0,.45);
+    transition: transform .25s ease;   /* 浮层抽屉滑动动画（不改画布尺寸，小地图零重算） */
+  }
+  .ff-sidebar.closed { transform: translateX(100%); }
+
+  /* 抽屉左缘的半圆把手：随抽屉一起滑动，收起后仍露在屏幕右缘 */
+  .ff-sidebar-handle {
+    position: absolute; left: -22px; top: 50%; transform: translateY(-50%);
+    width: 22px; height: 52px; padding: 0;
+    border: 1px solid var(--border-2); border-right: 0;
+    border-radius: 12px 0 0 12px;
+    background: var(--panel); color: var(--dim);
+    font-size: 14px; line-height: 1; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: -2px 0 8px rgba(0,0,0,.35);
+  }
+  .ff-sidebar-handle:hover { color: var(--text); background: var(--card-head); border-color: var(--dim); }
+  .ff-pane { display: flex; flex-direction: column; min-height: 0; }
+  .ff-pane-split {
+    flex: none; height: 7px; cursor: row-resize;
+    border-top: 1px solid var(--border);
+    transition: background .15s;
+  }
+  .ff-pane-split:hover { background: rgba(107, 138, 253, .18); }
+  .ff-pane-head {
+    flex: none; display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px; border-bottom: 1px solid var(--border);
+    background: #1a212a; font-size: 12px; color: var(--dim);
+  }
+  .ff-pane-head b { color: var(--text); font-weight: 500; }
+  .ff-pane-head .sp { flex: 1; }
+  .ff-pane-head .file { font-size: 11px; color: var(--blue); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ff-intent {
+    flex: 1; width: 100%; resize: none; border: 0; outline: 0;
+    background: transparent; color: var(--text); padding: 10px 12px;
+    font: 13px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  .ff-intent::placeholder { color: #4d5766; }
+  .ff-intent-foot {
+    flex: none; padding: 6px 12px; border-top: 1px solid var(--border);
+    font-size: 10px; color: #5a6577;
+  }
+  /* 滚动条通用接口（全局）：对页面内一切滚动区生效，新滚动区无需再挂任何类 */
+  * { scrollbar-width: thin; scrollbar-color: #2a323d transparent; }
+  *::-webkit-scrollbar { width: 8px; height: 8px; }
+  *::-webkit-scrollbar-thumb { background: #2a323d; border-radius: 4px; }
+  *::-webkit-scrollbar-thumb:hover { background: #3a4553; }
+  *::-webkit-scrollbar-track { background: transparent; }
+  *::-webkit-scrollbar-corner { background: transparent; }
+  .ff-code-body {
+    flex: 1; overflow: auto; min-height: 0; padding: 8px 0;
+  }
+  .ff-code-empty { padding: 20px 16px; font-size: 12px; color: #4d5766; line-height: 1.9; }
+  .code-line { display: flex; font-size: 11px; line-height: 1.7; }
+  .code-line .ln {
+    flex: none; width: 42px; padding-right: 10px; text-align: right;
+    color: #475161; user-select: none;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+  }
+  .code-line .lc {
+    flex: 1; white-space: pre-wrap; word-break: break-all; padding-right: 10px;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+  }
+  .code-line.hit { background: rgba(107, 138, 253, .12); }
+  .code-line.hit .ln { color: #8b9bb4; }
+  .c-kw { color: #ff9fd0; }
+  .c-str { color: #9ece6a; }
+  .c-cmt { color: #5f6b7a; font-style: italic; }
+  .c-num { color: #f0b37e; }
+
+  /* 节点右上角「{ }」查看源码按钮 */
+  .ff-code-btn {
+    flex: none;
+    width: 20px; height: 18px; border-radius: 5px; padding: 0;
+    border: 1px solid var(--border-2); background: #232c38; color: var(--dim);
+    font-size: 10px; cursor: pointer;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .ff-code-btn:hover { background: var(--primary); border-color: var(--primary); color: #fff; }
+  .ff-node.focus .ff-focus-btn { background: var(--primary); border-color: var(--primary); color: #fff; }
+  .ff-code-btn.ff-view-btn.on { background: var(--primary); border-color: var(--primary); color: #fff; }
+
+  /* React Flow 暗色适配 */
+  .react-flow__controls { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,.4); }
+  .react-flow__controls-button { background: var(--panel); border-bottom: 1px solid var(--border); }
+  .react-flow__controls-button svg { fill: var(--text); }
+  /* 小地图固定左下角，控制按钮横排叠在它正上方（一个角落集群） */
+  .react-flow__minimap {
+    left: 14px !important; right: auto !important; bottom: 14px !important;
+    width: 200px; height: 132px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+  }
+  .react-flow__minimap svg { width: 100%; height: 100%; }
+  /* 视口指示：mask 是单条双子路径(even-odd)，描边会把「外框=viewBox 外扩 5R」也描上，
+     被圆角/overflow 裁切后残留成「左右两道蓝线」，故 mask 永不描边。
+     视窗边框改由 .ff-minimap-frame 覆盖层绘制：JS 复刻 MiniMap 内部换算公式定位（见 updateMiniFrame）。 */
+  .react-flow__minimap-mask {
+    stroke: none;
+  }
+  /* 小地图视窗边框覆盖层：铺满画布区的透明层，内层 <i> 由 updateMiniFrame
+     按 mask 内框的实测屏幕坐标定位（读 DOM 几何，不复刻 MiniMap 内部公式） */
+  .ff-minimap-frame {
+    position: absolute; inset: 0;
+    pointer-events: none; z-index: 6;
+  }
+  .ff-minimap-frame > i {
+    position: absolute; display: none; box-sizing: border-box;
+    border: 1px solid var(--primary); border-radius: 2px;
+    box-shadow: 0 0 5px rgba(107, 138, 253, .4);
+  }
+  .react-flow__controls {
+    display: flex; flex-direction: row;
+    left: 14px !important; right: auto !important; bottom: 154px !important;
+  }
+  .react-flow__controls-button {
+    border-bottom: 0 !important; border-right: 1px solid var(--border) !important;
+  }
+  .react-flow__controls-button:last-child { border-right: 0 !important; }
+  .react-flow__attribution { background: transparent; color: var(--dim); }
+  .react-flow__edge-textbg { fill: var(--card); }
+  .react-flow__edge-text { fill: var(--text); }
+  /* 自定义边删除按钮：hover 边或选中边时，中点浮现 ✕（复刻 demo「删除线段」） */
+  .ff-edge-del { opacity: 0; pointer-events: none; cursor: pointer; transition: opacity .15s; }
+  /* 点击（选中）线段后才浮现 ✕，对齐「点击线段后出现删除功能」；不再靠 hover 触发 */
+  .react-flow__edge.selected .ff-edge-del { opacity: 1; pointer-events: all; }
+  .ff-edge-del circle { fill: #2a323d; stroke: var(--primary); stroke-width: 1.5px; transition: fill .15s, stroke .15s; }
+  .ff-edge-del text { fill: var(--text); font-size: 13px; }
+  .ff-edge-del:hover circle { fill: #f85149; stroke: #f85149; }
+  /* 选中线段后整条线白色高亮，让选中态更醒目（选中态由 React Flow 给边组加 .selected） */
+  .react-flow__edge.selected .react-flow__edge-path { stroke: #fff !important; stroke-width: 2.5px; }
+  .react-flow__edge.selected .ff-edge-del { filter: drop-shadow(0 0 3px rgba(255,255,255,.5)); }
+  .react-flow__handle { width: 9px; height: 9px; border: 2px solid var(--bg); }
+  .react-flow__handle-left { background: var(--dim); }
+  .react-flow__handle-right { background: var(--primary); }
+  .react-flow__node { cursor: grab; }
+  .react-flow__node:active { cursor: grabbing; }
+
+  /* 函数节点卡片（黑盒：函数名/签名/注释/文件位置，左入右出端口） */
+  .ff-node {
+    width: 260px; background: var(--card); border: 1px solid var(--border);
+    border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,.35);
+    transition: box-shadow .15s, border-color .15s;
+  }
+  .ff-node:hover { box-shadow: 0 3px 10px rgba(0,0,0,.5); }
+  .ff-node.selected { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(107,138,253,.3); }
+  .ff-node.warn { border-color: var(--amber); }
+  .ff-node.hot { border-color: var(--red); box-shadow: 0 0 0 1px rgba(248,81,73,.4); }
+  .ff-node.hot.selected { box-shadow: 0 0 0 2px rgba(248,81,73,.45); }
+  .ff-head {
+    background: var(--card-head); border-bottom: 1px solid var(--border);
+    padding: 6px 10px; border-radius: 8px 8px 0 0;
+  }
+  .ff-name-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .ff-f { color: var(--amber); font-family: ui-monospace, Consolas, monospace; font-size: 10px; }
+  .ff-name {
+    flex: 1; min-width: 0;
+    font-family: ui-monospace, Consolas, monospace; font-size: 13px; font-weight: 600;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .ff-badge { flex: none; font-size: 10px; padding: 1px 6px; border-radius: 4px; cursor: help; }
+  .ff-badge.warn { background: rgba(227,179,65,.15); color: var(--amber); border: 1px solid rgba(227,179,65,.4); }
+  .ff-badge.hot { background: rgba(248,81,73,.15); color: var(--red); border: 1px solid rgba(248,81,73,.4); }
+
+  /* 聚焦模式：工具栏 chip + 聚焦节点高亮圈 */
+  .ff-focus-chip {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 12px; padding: 2px 10px; border-radius: 999px;
+    background: rgba(107,138,253,.15); border: 1px solid rgba(107,138,253,.45); color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(107,138,253,.22);
+    animation: ff-focus-pulse 1.8s ease-in-out infinite;
+  }
+  @keyframes ff-focus-pulse {
+    0%, 100% { box-shadow: 0 0 0 3px rgba(107,138,253,.18); }
+    50%      { box-shadow: 0 0 0 6px rgba(107,138,253,.42); }
+  }
+  .ff-chip-x {
+    cursor: pointer; border: 0; background: transparent;
+    color: var(--dim); font-size: 11px; padding: 0 2px;
+  }
+  .ff-chip-x:hover { color: var(--text); }
+  .ff-node.focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(107,138,253,.45); }
+
+  /* 空态导入遮罩（默认出现，载入后消失） */
+  .ff-empty {
+    position: absolute; inset: 0; z-index: 16;
+    background: rgba(14, 17, 22, .72);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .ff-empty-card {
+    text-align: center; background: var(--panel);
+    border: 1px solid var(--border-2); border-radius: 12px;
+    padding: 30px 40px; box-shadow: 0 12px 48px rgba(0,0,0,.5);
+  }
+  .ff-empty-title { font-size: 20px; font-weight: 700; letter-spacing: .3px; margin-bottom: 6px; }
+  .ff-empty-title span { color: var(--primary); }
+  .ff-empty-sub { font-size: 13px; color: var(--dim); margin-bottom: 16px; }
+  .ff-empty-actions { display: flex; gap: 10px; justify-content: center; margin-bottom: 12px; }
+  .ff-empty-hint { font-size: 11px; color: #5a6577; }
+  .ff-loc {
+    margin-top: 2px; font-size: 10px; color: var(--dim);
+    font-family: ui-monospace, Consolas, monospace;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .ff-sig { padding: 5px 10px; border-bottom: 1px solid rgba(42,50,61,.6); }
+  .ff-sig code { font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: var(--blue); word-break: break-all; }
+  .ff-comment { padding: 6px 10px; font-size: 11px; line-height: 1.6; color: var(--dim); white-space: pre-line; }
+
+  /* ---------- 拖入遮罩层（拖 JSON 文件悬停窗口时全屏高亮，pointer-events:none 不挡 drop） ---------- */
+  .ff-drop {
+    position: absolute; inset: 0; z-index: 20;
+    background: rgba(14, 17, 22, .55);
+    display: flex; align-items: center; justify-content: center;
+    pointer-events: none;
+  }
+  .ff-drop-box {
+    text-align: center; border: 2px dashed var(--primary); border-radius: 14px;
+    padding: 40px 56px; background: rgba(21, 26, 33, .75);
+    box-shadow: 0 12px 48px rgba(0,0,0,.5);
+  }
+  .ff-drop-title { font-size: 18px; font-weight: 700; color: var(--primary); letter-spacing: .3px; }
+  .ff-drop-sub { margin-top: 8px; font-size: 13px; color: var(--text); }
+
+  /* ---------- 帮助图标 + 使用方法弹层 ---------- */
+  .ff-help-btn {
+    cursor: pointer; width: 22px; height: 22px; flex: none;
+    border: 1px solid var(--border-2); border-radius: 50%;
+    background: transparent; color: var(--dim);
+    font-size: 13px; font-weight: 700; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .ff-help-btn:hover { color: var(--text); border-color: var(--primary); background: var(--card-head); }
+  .ff-help-btn.active { color: #fff; border-color: var(--primary); background: var(--primary); }
+  .ff-help-mask {
+    position: absolute; inset: 0; z-index: 30;
+    background: rgba(14, 17, 22, .6);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .ff-help-card {
+    display: flex; flex-direction: column;
+    width: 520px; max-width: calc(100vw - 40px); max-height: calc(100vh - 60px); overflow: hidden;
+    background: var(--panel); border: 1px solid var(--border-2); border-radius: 12px;
+    padding: 22px 26px; box-shadow: 0 16px 56px rgba(0,0,0,.55);
+  }
+  /* 帮助正文独立滚动：标题与关闭按钮固定在卡顶，不随内容卷走 */
+  .ff-help-body { flex: 1; min-height: 0; overflow-y: auto; }
+  .ff-help-head { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+  .ff-help-head b { font-size: 16px; }
+  .ff-help-head .sp { flex: 1; }
+  .ff-help-close {
+    cursor: pointer; border: 1px solid var(--border-2); background: transparent;
+    color: var(--dim); border-radius: 6px; width: 26px; height: 24px; font-size: 14px;
+  }
+  .ff-help-close:hover { color: var(--text); border-color: var(--primary); }
+  .ff-help-card ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 11px; }
+  .ff-help-card li { font-size: 13px; line-height: 1.65; color: var(--text); padding-left: 16px; position: relative; }
+  .ff-help-card li::before { content: "›"; position: absolute; left: 0; color: var(--primary); font-weight: 700; }
+  .ff-help-card li b { color: var(--primary); }
+  .ff-help-card code {
+    font-family: ui-monospace, Consolas, monospace; font-size: 12px;
+    background: var(--card); padding: 1px 5px; border-radius: 4px; color: var(--blue);
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="vendor/react.production.min.js"></script>
+<script src="vendor/react-dom.production.min.js"></script>
+<script src="vendor/reactflow-umd.js"></script>
+<script src="vendor/htm.js"></script>
+<script>
+"use strict";
+const { useState, useCallback, useMemo, useRef, useEffect, memo } = React;
+const html = htm.bind(React.createElement);
+const RF = window.ReactFlow;   // UMD 命名空间；不可写成 const { ReactFlow } = ReactFlow——右侧会命中同名 const 的 TDZ
+const {
+  ReactFlow: Flow, Background, BackgroundVariant, Controls, MiniMap,
+  Handle, Position, addEdge, applyNodeChanges, applyEdgeChanges,
+  getSmoothStepPath, BaseEdge,
+} = RF;
+
+/* ---------- 流入预警阈值（图论叫扇入/fan-in，UI 用「流入」）：>=5 琥珀，>=10 红（hma_core 实测 _conn 流入 30） ---------- */
+const FAN_WARN = 5, FAN_HOT = 10;
+const FOCUS_HOPS = 1;   // 聚焦跳数：±N 跳上下游
+
+/* ---------- 默认画布数据：src/orders/ 真实提取基线（8 节点 4 边） ---------- */
+const EMBEDDED_FLOW = {
+  schema: "functionflow/v1",
+  projectRoot: "src/orders/",
+  language: "python",
+  nodes: [
+    { id: "n1", type: "function", position: { x: 290, y: 40 },
+      data: { function: "send_confirmation", file: "src/orders/notify.py", line: 15, endLine: 29,
+        signature: "(order: Order) -> None", comment: "异步发送确认邮件 + 短信，失败重试 3 次。" } },
+    { id: "n2", type: "function", position: { x: 540, y: 250 },
+      data: { function: "_render", file: "src/orders/notify.py", line: 32, endLine: 37,
+        signature: "(order: Order) -> Rendered", comment: "渲染邮件正文与短信模板。" } },
+    { id: "n3", type: "function", position: { x: 40, y: -65 },
+      data: { function: "compute_total", file: "src/orders/pricing.py", line: 8, endLine: 25,
+        signature: "(cart: ValidatedCart, user: User) -> Money", comment: "商品小计 + 税费 - 优惠；VIP 用户享额外折扣。" } },
+    { id: "n4", type: "function", position: { x: 290, y: 250 },
+      data: { function: "_coupon_discount", file: "src/orders/pricing.py", line: 28, endLine: 30,
+        signature: "(cart: ValidatedCart, subtotal: Decimal) -> Decimal", comment: "优惠券折扣，占位实现。" } },
+    { id: "n5", type: "function", position: { x: 40, y: 145 },
+      data: { function: "load_user", file: "src/orders/service.py", line: 12, endLine: 17,
+        signature: "(user_id: int) -> User", comment: "按 user_id 加载用户，不存在时抛 UserNotFound。" } },
+    { id: "n6", type: "function", position: { x: 40, y: 355 },
+      data: { function: "validate_cart", file: "src/orders/service.py", line: 28, endLine: 42,
+        signature: "(cart: Cart) -> ValidatedCart", comment: "校验库存、价格与上下架状态，返回校验后快照。" } },
+    { id: "n7", type: "function", position: { x: 290, y: 460 },
+      data: { function: "_order_no", file: "src/orders/service.py", line: 52, endLine: 54,
+        signature: "() -> str", comment: "生成全局唯一订单号。" } },
+    { id: "n8", type: "function", position: { x: 40, y: 565 },
+      data: { function: "create_order", file: "src/orders/service.py", line: 60, endLine: 88,
+        signature: "(user: User, cart: ValidatedCart, total: Money) -> Order", comment: "落库创建订单、扣库存、生成支付单，事务内执行。" } },
+  ],
+  edges: [
+    { id: "e1", from: "n1", to: "n2" },
+    { id: "e2", from: "n3", to: "n4" },
+    { id: "e3", from: "n8", to: "n1" },
+    { id: "e4", from: "n8", to: "n7" },
+  ],
+};
+
+/* ---------- FunctionFlowFile <-> ReactFlow 数据 ---------- */
+function toReactFlow(flow) {
+  return {
+    // position 兜底：手写/旧 JSON 可能缺 position，而 relayoutNodes 要读 n.position.x 分簇，缺了会 TypeError
+    nodes: flow.nodes.map((n) => ({ id: n.id, type: "function", position: n.position || { x: 0, y: 0 }, data: n.data })),
+    edges: flow.edges.map((e) => ({
+      id: e.id, source: e.from, target: e.to, label: e.label,
+      type: "functionflow", animated: true,
+      style: { stroke: "var(--primary)", strokeWidth: 1.5 },
+    })),
+  };
+}
+
+/** 导出全部节点（含被「隐藏孤岛」过滤掉的——视图过滤不是数据删除，忠实性优先）；
+ *  intent 为人工意图层字段（右侧栏文本框，导出一并带上，铁律：一份 JSON 两用途） */
+/* 导出：只留契约必需字段。已剔除的噪音：
+   - generatedAt：每次导出都变 → 纯 diff 噪音，对读 JSON 的 AI 零信号
+   - type:"function"：每节点重复的常量（schema 里没有第二种节点类型）
+   - line/endLine 为 0：to-be 节点的占位零值
+   - position：坐标完全不进 JSON（约占旧导出 18%）。坐标的两个生产者——提取器（最长路径机械推导）
+     和渲染侧重排——都与 AI 无关；布局由渲染侧在导入/重排时按「调用图最长路径 + 真实节点高度」
+     实时计算（relayoutNodes 深度来源已改为边拓扑，与提取器同款松弛算法）。旧版带坐标的 JSON
+     仍可导入，坐标会被重排覆盖（导入自动重排本就如此，无回归）。 */
+function fromReactFlow(allNodes, edges, projectRoot, intent, language) {
+  const payload = {
+    schema: "functionflow/v1",
+    projectRoot,
+    language,   // 源语言（python/ts）：导入时保存、导出带回（P2 修复回导丢失）；未设置时 JSON.stringify 自动剔除
+    nodes: allNodes.map((n) => {
+      const { fanIn, ...data } = n.data;  // fanIn 是画布派生值，不入 schema（rest 展开是新对象，可安全删键）
+      if (!data.line) delete data.line;          // 占位零值不入 schema
+      if (!data.endLine) delete data.endLine;
+      return { id: n.id, data };
+    }),
+    edges: edges.map((e) => ({
+      id: e.id, from: e.source, to: e.target,
+      label: typeof e.label === "string" ? e.label : undefined,
+    })),
+  };
+  if (intent) payload.intent = intent;
+  return payload;
+}
+
+/* ---------- 查看源码：节点 → 右侧栏（经 Context 传递回调，避免污染 data） ---------- */
+const NodeActionsCtx = React.createContext(null);   // 节点动作：{ viewCode, focus }
+
+/* ---------- 源码轻量高亮（自 demo.html 移植） ---------- */
+const HL_RE = /(#.*$)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|\b(def|return|if|elif|else|for|while|import|from|class|try|except|finally|raise|with|as|not|in|is|and|or|None|True|False|async|await|lambda|pass|yield|global|const|let|var|function|new|export|interface)\b|\b(\d+(?:\.\d+)?)\b/g;
+function escHtml(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function hlLine(line) {
+  return escHtml(line).replace(HL_RE, (m, c, str, kw) => {
+    const cls = c ? "c-cmt" : str ? "c-str" : kw ? "c-kw" : "c-num";
+    return '<span class="' + cls + '">' + m + "</span>";
+  });
+}
+
+  /* ---------- 金字塔→方块（自 demo.html relayout 移植）：
+     把高塔列展开成 2D 方块：列优先填满 ROWS_CAP 行再开子列，行距按该行最高节点定，
+     整体"多左右、少上下"。
+     深度来源（P1 终形态）：调用图最长路径松弛——与提取器 extract_flow.py 同款算法，
+     纯渲染侧可算，JSON 不再携带坐标；手工编排图 / AI 改过的图 / 无坐标 JSON 一视同仁，
+     塌层问题（P3）不复存在。层内排序改按 data.line（与提取器一致），无行号回退 id。 ---------- */
+  function relayoutNodes(nds, es) {
+    const COL_W = 300, ROWS_CAP = 7, ROW_MARGIN = 26, LAYER_GAP = 70;
+    const BASE_X = 40, TOP_Y = 0, NODE_W = 260, DEF_H = 90;
+    // 最长路径松弛：level[to] = max(level[to], level[from] + 1)，迭代至不动点（有环也有界）
+    const level = new Map(nds.map((n) => [n.id, 0]));
+    if (es && es.length) {
+      for (let i = 0; i <= nds.length; i++) {
+        let changed = false;
+        for (const e of es) {
+          if (!level.has(e.source) || !level.has(e.target)) continue;
+          if (level.get(e.target) < level.get(e.source) + 1) {
+            level.set(e.target, level.get(e.source) + 1);
+            changed = true;
+          }
+        }
+        if (!changed) break;
+      }
+    }
+    const byDepth = {};
+    for (const n of nds) (byDepth[level.get(n.id)] ||= []).push(n);
+
+    const out = new Map();
+    let layerX = BASE_X;
+    for (const d of Object.keys(byDepth).map(Number).sort((a, b) => a - b)) {
+      const g = byDepth[d].slice().sort((a, b) => (a.data.line || 0) - (b.data.line || 0) || a.id.localeCompare(b.id));
+      const cols = Math.max(1, Math.ceil(g.length / ROWS_CAP));
+      const rows = Math.ceil(g.length / cols);
+      const rowMax = Array(rows).fill(0);
+      g.forEach((nd, idx) => {
+        const el = document.querySelector('.react-flow__node[data-id="' + nd.id + '"]');
+        const h = el ? el.offsetHeight : DEF_H;
+        const rr = idx % rows;
+        if (h > rowMax[rr]) rowMax[rr] = h;
+      });
+      const rowY = [];
+      let y = TOP_Y;
+      for (let r = 0; r < rows; r++) { rowY.push(y); y += rowMax[r] + ROW_MARGIN; }
+      g.forEach((nd, idx) => {
+        const rr = idx % rows, cc = Math.floor(idx / rows);
+        out.set(nd.id, { x: Math.round(layerX + cc * COL_W), y: Math.round(rowY[rr]) });
+      });
+      layerX += (cols - 1) * COL_W + NODE_W + LAYER_GAP;
+    }
+    return nds.map((n) => (out.has(n.id) ? { ...n, position: out.get(n.id) } : n));
+  }
+
+  /* ---------- 函数节点：黑盒 + 流入预警（尺寸/颜色映射） ---------- */
+function FunctionNodeComponent({ id, data, selected }) {
+  const fan = data.fanIn || 0;
+  const tier = fan >= FAN_HOT ? "hot" : fan >= FAN_WARN ? "warn" : "";
+  const scale = fan >= FAN_HOT ? 1.1 : fan >= FAN_WARN ? 1.05 : 1;
+  const actions = React.useContext(NodeActionsCtx);
+  return html`
+    <div
+      className=${"ff-node" + (selected ? " selected" : "") + (tier ? " " + tier : "")
+        + (data.isFocus ? " focus" : "")}
+      style=${{ transform: `scale(${scale})` }}
+      title=${fan >= FAN_HOT ? `流入 ${fan}：改动高危，牵一发动全身`
+           : fan >= FAN_WARN ? `流入 ${fan}：改动需评估下游影响` : undefined}
+    >
+      <${Handle} type="target" position=${Position.Left} className="ff-handle-in" />
+      <div className="ff-head">
+        <div className="ff-name-row">
+          <span className="ff-f">ƒ</span>
+          <span className="ff-name">${data.function}</span>
+          ${fan >= FAN_WARN && html`<span className=${"ff-badge " + tier}>流入 ${fan}</span>`}
+          <button className="ff-code-btn ff-focus-btn" title="聚焦：只显示该函数的上游与下游"
+                  onClick=${(e) => { e.stopPropagation(); actions && actions.focus(id); }}>◎</button>
+          <button className=${"ff-code-btn ff-view-btn" + (actions.codeViewId === id ? " on" : "")} title="在右侧栏查看源码"
+                  onClick=${(e) => { e.stopPropagation(); actions && actions.viewCode(id); }}>{ }</button>
+        </div>
+        <div className="ff-loc">${data.line ? data.file + ":" + data.line : data.file}</div>
+      </div>
+      ${data.signature && html`<div className="ff-sig"><code>${data.signature}</code></div>`}
+      ${data.comment && html`<div className="ff-comment">${data.comment}</div>`}
+      <${Handle} type="source" position=${Position.Right} className="ff-handle-out" />
+    </div>
+  `;
+}
+const FunctionNode = memo(FunctionNodeComponent);
+const nodeTypes = { function: FunctionNode };
+
+/* ---------- 自定义边：hover / 选中时中点浮现 ✕ 删除按钮（复刻 demo 网页「删除线段」） ---------- */
+const FunctionFlowEdge = memo(({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, label, markerEnd, style }) => {
+  const [edgePath, labelX, labelY] = getSmoothStepPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition });
+  const { deleteEdge } = React.useContext(NodeActionsCtx);
+  const hasLabel = typeof label === "string" && label.length > 0;
+  const dy = hasLabel ? labelY - 16 : labelY;   // 边带标签时把 ✕ 上移，避免压住文字
+  const del = (ev) => { ev.stopPropagation(); deleteEdge(id); };
+  return html`
+    <${BaseEdge} id=${id} path=${edgePath} markerEnd=${markerEnd} style=${style}
+                label=${label} labelX=${labelX} labelY=${labelY} />
+    <g className="ff-edge-del" transform=${"translate(" + labelX + "," + dy + ")"} onClick=${del}>
+      <circle r=${9} />
+      <text x=${0} y=${0} text-anchor="middle" dominant-baseline="central">✕</text>
+    </g>
+  `;
+});
+const edgeTypes = { functionflow: FunctionFlowEdge };
+
+/* ---------- 画布 ---------- */
+function FlowCanvas() {
+  const [allNodes, setNodes] = useState([]);               // 默认空态：遮罩引导导入 JSON
+  const [edges, setEdges] = useState([]);
+  const [projectRoot, setProjectRoot] = useState(undefined);
+  const [language, setLanguage] = useState(undefined);     // 源语言（python/ts）：导入保存、导出带回（P2 修复，不再回导丢失）
+  const [hideIslands, setHideIslands] = useState(true);   // 零连接孤岛默认不画
+  const [importIslands, setImportIslands] = useState(() => new Set());  // 导入时刻的孤岛集合：仅这些节点受「隐藏孤岛」过滤；删边产生的动态孤岛不隐藏，避免"删边连节点一起没"
+  const [graphKey, setGraphKey] = useState(0);            // 导入后重挂载触发 fitView
+  const [showAdd, setShowAdd] = useState(false);          // 新增节点内嵌面板
+  const [draft, setDraft] = useState({ name: "", sig: "", note: "" });
+  const [intent, setIntent] = useState("");                // 改动意图（导出作 intent 字段）
+  const [tabs, setTabs] = useState([]);                    // 标签槽：[{id, name, snapshot}]；激活标签 live 即真相（snapshot 为 null）
+  const [activeTabId, setActiveTabId] = useState(null);
+  const hasFlow = tabs.length > 0;                         // 是否有打开的图（空态显示导入遮罩）
+  const [intentH, setIntentH] = useState(240);            // 意图面板高度（分栏条拖拽调节）
+  const [codeView, setCodeView] = useState(null);         // 源码审查：{nodeId,file,fn,line,endLine,status,text}
+  const [sidebarOpen, setSidebarOpen] = useState(true);   // 右侧栏收拉状态
+  const [layersOpen, setLayersOpen] = useState(true);     // 左侧图层面板收拉状态
+  const [pendingRelayout, setPendingRelayout] = useState(true);  // 导入后跑一次方块重排
+  const [focusId, setFocusId] = useState(null);           // 聚焦节点 id（只显示 ±FOCUS_HOPS 跳上下游）
+  const [dragActive, setDragActive] = useState(false);    // 拖入遮罩层（拖 JSON 文件悬停窗口时显隐）
+  const [showHelp, setShowHelp] = useState(false);        // 使用方法弹层
+  const rfInstance = useRef(null);
+  const wrapperRef = useRef(null);
+  const codeBodyRef = useRef(null);
+  const sidebarRef = useRef(null);
+  const nodesRef = useRef([]);          // 供定时任务读取最新节点（不触发重渲染）
+  nodesRef.current = allNodes;
+  const edgesRef = useRef([]);          // 标签切换时快照当前图用（不触发重渲染）
+  edgesRef.current = edges;
+  const liveMetaRef = useRef({});       // intent/projectRoot/importIslands/language 最新值（标签快照用）
+  liveMetaRef.current = { intent, projectRoot, importIslands, language };
+  const tabsRef = useRef([]); tabsRef.current = tabs;
+  const activeTabIdRef = useRef(null); activeTabIdRef.current = activeTabId;
+  const miniFrameRef = useRef(null);    // 小地图视窗边框覆盖层内层 <i>
+
+  /* 标签机制：当前画布 live 即激活标签的真相；snapshot 仅在「离开该标签」时写入。
+     snapLive 从 refs 取最新图状态（避免 applyFlow/switch 为拿新值而膨胀依赖）；
+     loadSnapshot 把槽位内容灌回 live 并清瞬态。均在事件时才执行，不涉 TDZ。 */
+  const snapLive = () => ({
+    nodes: nodesRef.current, edges: edgesRef.current,
+    intent: liveMetaRef.current.intent, projectRoot: liveMetaRef.current.projectRoot,
+    importIslands: liveMetaRef.current.importIslands, language: liveMetaRef.current.language,
+    viewport: rfInstance.current ? rfInstance.current.getViewport() : null,   // 各标签记忆自己的缩放/平移
+  });
+  const loadSnapshot = (s) => {
+    setNodes(s ? s.nodes : []);
+    setEdges(s ? s.edges : []);
+    setIntent(s ? s.intent : "");
+    setProjectRoot(s ? s.projectRoot : undefined);
+    setImportIslands(s ? s.importIslands : new Set());
+    setLanguage(s ? s.language : undefined);
+    setCodeView(null); setFocusId(null); setCtxMenu(null);
+    setEditId(null); setShowAdd(false);
+    setPendingRelayout(false);   // 位置已存在槽里，切回来不重排
+    const v = s ? s.viewport : null;
+    if (v && rfInstance.current) rfInstance.current.setViewport(v);   // 恢复该标签自己的视口
+  };
+
+  /* 小地图视窗边框：mask 内框（第二条 M 子路径）就是 MiniMap 自己算好的视口矩形，
+     直接解析它的 d 属性 + getScreenCTM() 拿到实测屏幕坐标，覆盖层照着描边——
+     不复刻内部公式（viewBox 外扩/meet 缩放/CSS 拉伸全由浏览器实测兜底），缩放永不漂移。 */
+  const draggingRef = useRef(false);   // 节点拖拽中为 true，期间跳过 minimap 边框重算（移植 demo 性能策略）
+  const updateMiniFrame = useCallback(() => {
+    if (draggingRef.current) return;   // 拖拽中跳过：避免每帧 getScreenCTM 重算（大图拖拽卡顿）
+    const el = miniFrameRef.current, wrap = wrapperRef.current;
+    if (!el || !wrap) return;
+    const mask = wrap.querySelector(".react-flow__minimap-mask");
+    if (!mask) { el.style.display = "none"; return; }
+    const segs = (mask.getAttribute("d") || "").split("z");
+    const inner = segs.length > 1 ? segs[segs.length - 2] : "";   // 倒数第二段 = 视口内框
+    const m = inner.match(/M\s*(-?[\d.]+(?:e[+-]?\d+)?)[\s,]+(-?[\d.]+(?:e[+-]?\d+)?)\s*h\s*(-?[\d.]+(?:e[+-]?\d+)?)\s*v\s*(-?[\d.]+(?:e[+-]?\d+)?)/);
+    const ctm = mask.getScreenCTM();
+    if (!m || !ctm) { el.style.display = "none"; return; }
+    const x = +m[1], y = +m[2], w = +m[3], h = +m[4];
+    const x1 = x * ctm.a + ctm.e, y1 = y * ctm.d + ctm.f;
+    const x2 = (x + w) * ctm.a + ctm.e, y2 = (y + h) * ctm.d + ctm.f;
+    const wr = wrap.getBoundingClientRect();
+    el.style.display = "block";
+    el.style.left = x1 - wr.left + "px";
+    el.style.top = y1 - wr.top + "px";
+    el.style.width = Math.max(x2 - x1, 4) + "px";
+    el.style.height = Math.max(y2 - y1, 4) + "px";
+  }, []);
+
+  /* 抽屉收拉（带动画保险）：个别渲染环境 CSS transition 会被挂起（属性停在动画起点），
+     400ms 后抽屉仍未到位就瞬时补齐终态——正常浏览器动画完整播放，异常环境不卡死 */
+  const toggleSidebar = useCallback(() => {
+    const next = !sidebarOpen;
+    setSidebarOpen(next);
+    const el = sidebarRef.current;
+    if (!el) return;
+    setTimeout(() => {
+      const left = el.getBoundingClientRect().left;
+      const target = next ? window.innerWidth - el.offsetWidth : window.innerWidth;
+      if (Math.abs(left - target) > 2) {
+        el.style.transition = "none";
+        el.style.transform = next ? "" : "translateX(100%)";
+        void el.offsetWidth;   // 强制重排，瞬时到位
+        requestAnimationFrame(() => {
+          el.style.transition = "";
+          el.style.transform = "";
+        });
+      }
+    }, 400);
+  }, [sidebarOpen]);
+
+  /* 源码审查：HTTP 环境下拉取节点源文件，高亮函数行号区间（file:// 下提示限制） */
+  const showCode = useCallback((nodeId) => {
+    // 再点同一节点的 { } = 取消展示（闭环）：先把 codeView 清空即可，节点 isCode 随之熄灭
+    if (codeView && codeView.nodeId === nodeId) {
+      setCodeView(null);
+      return;
+    }
+    // 侧栏若收起，点源码按钮时直接复用抽屉按钮的开合机制滑出（toggleSidebar 自带 400ms 兜底），不另写开合逻辑
+    if (!sidebarOpen) toggleSidebar();
+    const n = allNodes.find((x) => x.id === nodeId);
+    if (!n) return;
+    const isToBe = n.data.file === "(画布新增)";   // 画布新增的 to-be 节点：无源码文件，点 { } 给「暂无」提示，不发起 fetch
+    const view = {
+      nodeId, file: n.data.file, fn: n.data.function,
+      line: n.data.line || 0, endLine: n.data.endLine || n.data.line || 0,
+      status: isToBe ? "empty" : "loading", text: null,
+    };
+    // 抽屉刚收起时：开合与 codeView 更新若落在同一 commit，重同步渲染易打断 CSS transition；
+    // 延后一帧设置 codeView，让抽屉 transition 先在自己的渲染周期里跑起来
+    const applyView = () => {
+      setCodeView(view);
+      if (isToBe) return;   // to-be 节点：直接展示「暂无」，不拉取源码
+      fetch(view.file, { cache: "no-store" })
+        .then((r) => { if (!r.ok) throw new Error("HTTP " + r.status); return r.text(); })
+        .then((text) => {
+          setCodeView((cur) => (cur && cur.nodeId === nodeId ? { ...view, status: "ok", text } : cur));
+        })
+        .catch(() => {
+          setCodeView((cur) => (cur && cur.nodeId === nodeId ? { ...view, status: "error" } : cur));
+        });
+    };
+    if (!sidebarOpen) requestAnimationFrame(applyView);
+    else applyView();
+  }, [allNodes, codeView, sidebarOpen, toggleSidebar]);
+
+  /* 切换源码后滚到函数首行。
+     不用 scrollIntoView：它会滚动所有可滚祖先（overflow:hidden 的 .ff-main 也能被编程滚动），
+     抽屉滑出过渡中途触发时命中行还在屏幕右缘外 → ff-main 被横向滚动 → 主画布从左往右滑动，
+     随后 400ms 兜底量到位移把抽屉瞬时 snap → 「侧栏突然冒出」。改为只滚代码容器内部。 */
+  useEffect(() => {
+    if (codeView && codeView.status === "ok" && codeBodyRef.current) {
+      const body = codeBodyRef.current;
+      const hit = body.querySelector(".code-line.hit");
+      if (hit) {
+        const top = hit.getBoundingClientRect().top - body.getBoundingClientRect().top
+          + body.scrollTop - body.clientHeight / 2;
+        body.scrollTop = Math.max(0, top);
+      }
+    }
+  }, [codeView]);
+
+  /* 导入/首次载入后：等重挂载稳定、节点高度量得到，再跑方块重排 + fitView
+     （直接在 rAF 里跑会与 graphKey 重挂载竞态，量到 0 高度导致行距塌陷重叠） */
+  useEffect(() => {
+    if (!pendingRelayout) return;
+    let cancelled = false;
+    let tries = 0;
+    const run = () => {
+      if (cancelled) return;
+      const nds = nodesRef.current;
+      let retry = false;
+      for (const n of nds) {
+        const el = document.querySelector('.react-flow__node[data-id="' + n.id + '"]');
+        if (el && el.offsetHeight < 40) { retry = true; break; }   // 渲染未提交完
+      }
+      if (retry && tries < 15) {
+        tries += 1;
+        requestAnimationFrame(run);
+        return;
+      }
+      setNodes(nds.length ? relayoutNodes(nds, edgesRef.current) : nds);
+      setPendingRelayout(false);
+      requestAnimationFrame(() => rfInstance.current && rfInstance.current.fitView({ padding: 0.2 }));
+    };
+    const t = setTimeout(run, 120);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [pendingRelayout]);
+
+  /* 意图/源码分栏条拖拽 */
+  const startSplit = useCallback((e) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = intentH;
+    const move = (ev) => setIntentH(
+      Math.min(Math.max(startH + ev.clientY - startY, 60), window.innerHeight - 220));
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  }, [intentH]);
+
+  /* 扇入/度数随边实时变化：人工补边后预警即时更新 */
+  const { fanIn, degree } = useMemo(() => {
+    const fanIn = {}, degree = {};
+    for (const e of edges) {
+      fanIn[e.target] = (fanIn[e.target] || 0) + 1;
+      degree[e.source] = (degree[e.source] || 0) + 1;
+      degree[e.target] = (degree[e.target] || 0) + 1;
+    }
+    return { fanIn, degree };
+  }, [edges]);
+
+  /* 聚焦：无向 BFS ±FOCUS_HOPS 跳；节点被删后聚焦自动失效 */
+  const focusName = useMemo(() => {
+    const n = allNodes.find((x) => x.id === focusId);
+    return n ? n.data.function : null;
+  }, [allNodes, focusId]);
+
+  const focusSet = useMemo(() => {
+    if (!focusId || !focusName) return null;
+    const adj = {};
+    for (const e of edges) {
+      (adj[e.source] ||= []).push(e.target);
+      (adj[e.target] ||= []).push(e.source);
+    }
+    const keep = new Set([focusId]);
+    let frontier = [focusId];
+    for (let h = 0; h < FOCUS_HOPS; h++) {
+      const nxt = [];
+      for (const u of frontier) {
+        for (const v of adj[u] || []) {
+          if (!keep.has(v)) { keep.add(v); nxt.push(v); }
+        }
+      }
+      frontier = nxt;
+    }
+    return keep;
+  }, [focusId, focusName, edges]);
+
+  const visibleEdges = useMemo(
+    () => (focusSet ? edges.filter((e) => focusSet.has(e.source) && focusSet.has(e.target)) : edges),
+    [edges, focusSet]
+  );
+
+  /* 性能（移植 demo 的 ANIM_MAX_EDGES）：边数超过阈值默认实线，避免上百条 CSS 虚线动画同时重绘；
+     仅选中边保留流动。大图不再因全局 animated 虚线重绘而卡。小图原样返回，不额外分配数组。 */
+  const ANIM_MAX_EDGES = 30;
+  const animatedEdges = useMemo(() => {
+    if (visibleEdges.length <= ANIM_MAX_EDGES) return visibleEdges;
+    let changed = false;
+    const out = visibleEdges.map((e) =>
+      (e.animated && !e.selected) ? (changed = true, { ...e, animated: false }) : e);
+    return changed ? out : visibleEdges;
+  }, [visibleEdges]);
+
+  const focusNode = useCallback((id) => {
+    setFocusId((cur) => (cur === id ? null : id));   // 再点一次 ◎ = 取消聚焦
+  }, []);
+
+  /* Esc 退出聚焦 */
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") setFocusId(null); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const nodes = useMemo(
+    () => allNodes
+      .map((n) => ({
+        ...n,
+        data: { ...n.data, fanIn: fanIn[n.id] || 0, isFocus: focusId === n.id },
+      }))
+      .filter((n) => !hideIslands || !importIslands.has(n.id)
+        || n.data.file === "(画布新增)")          // 画布新增的 to-be 节点是人的显式意图，豁免孤岛过滤
+      .filter((n) => !focusSet || focusSet.has(n.id)),  // 聚焦：只留 ±FOCUS_HOPS 跳上下游
+    [allNodes, fanIn, importIslands, hideIslands, focusSet]
+  );
+
+  const onNodesChange = useCallback(
+    (changes) => setNodes((nds) => applyNodeChanges(changes, nds)), []);
+  const onEdgesChange = useCallback(
+    (changes) => setEdges((eds) => applyEdgeChanges(changes, eds)), []);
+  const onConnect = useCallback(
+    (conn) => setEdges((eds) => addEdge({
+      ...conn, type: "functionflow", animated: true,
+      style: { stroke: "var(--primary)", strokeWidth: 1.5 },
+    }, eds)), []);
+
+  /* 小地图视窗框随节点集变化刷新（平移/缩放由 Flow 的 onMove 覆盖）：
+     拖拽、重排、导入、聚焦过滤都会改 nodes → 重新换算边框位置 */
+  useEffect(() => { updateMiniFrame(); }, [nodes, updateMiniFrame]);
+
+  /* 窗口 resize 不改视口 transform（onMove 不触发）但会改 mask 内框 → 也要刷新 */
+  useEffect(() => {
+    const onResize = () => updateMiniFrame();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [updateMiniFrame]);
+
+  /* 导出内容：聚焦时只导聚焦子图（±FOCUS_HOPS 相关函数块 + intent 设计文本），非聚焦导全量 */
+  const exportFlow = useCallback(() => {
+    const ns = focusSet ? allNodes.filter((n) => focusSet.has(n.id)) : allNodes;
+    const es = focusSet ? visibleEdges : edges;
+    return fromReactFlow(ns, es, projectRoot, intent, language);
+  }, [focusSet, allNodes, visibleEdges, edges, projectRoot, intent, language]);
+
+  const handleExport = useCallback(() => {
+    if (!hasFlow) { alert("画布为空：先导入 JSON（拖文件进窗口 / 点「导入 JSON」）"); return; }
+    const flow = exportFlow();
+    const blob = new Blob([JSON.stringify(flow, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    // 导出文件名 = 当前图层名（去 .json 后缀、滤非法字符）；无名字时回退 functionflow.json
+    const cur = tabsRef.current.find((t) => t.id === activeTabIdRef.current);
+    const base = ((cur && cur.name) || "functionflow").replace(/\.json$/i, "").replace(/[\\/:*?"<>|]/g, "_").trim() || "functionflow";
+    a.href = url; a.download = base + ".json"; a.click();
+    URL.revokeObjectURL(url);
+  }, [hasFlow, exportFlow]);
+
+  const applyFlow = useCallback((flow, tabName) => {
+    if (!flow || flow.schema !== "functionflow/v1") {
+      alert("JSON schema 不匹配，期望 functionflow/v1");
+      return;
+    }
+    const { nodes: ns, edges: es } = toReactFlow(flow);
+    // 导入 = 新开一个标签：先把当前激活标签的图快照落槽（live 马上被新图顶替），再换新图
+    const snap = snapLive();
+    const newId = "t" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+    setTabs((ts) => {
+      const base = ts.map((t) => (t.id === activeTabIdRef.current ? { ...t, snapshot: snap } : t));
+      return [...base, { id: newId, name: tabName || ("flow " + (base.length + 1)), snapshot: null, origin: flow }];
+    });
+    setActiveTabId(newId);
+    setNodes(ns); setEdges(es); setProjectRoot(flow.projectRoot);
+    setLanguage(flow.language);   // 保存源语言（P2：不再回导丢失）
+    // 冻结导入时刻的孤岛集合：删边产生的动态孤岛不纳入「隐藏孤岛」，节点保留可见
+    setImportIslands(new Set(
+      (flow.nodes || []).filter((n) => !(flow.edges || []).some((e) => e.from === n.id || e.to === n.id)).map((n) => n.id)
+    ));
+    setIntent(flow.intent || "");
+    setCodeView(null);
+    setFocusId(null);
+    setPendingRelayout(true);    // 导入后量高重排（金字塔→方块）
+    setGraphKey((k) => k + 1);   // 重挂载 → fitView 自动生效
+  }, []);
+
+  const handleImport = useCallback((file) => {
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        applyFlow(JSON.parse(ev.target.result), file.name);
+      } catch (err) {
+        alert("JSON 解析失败：" + err.message);
+      }
+    };
+    reader.readAsText(file);
+  }, [applyFlow]);
+
+  /* ?src=ff_workspace/<订单>/json/xxx.json —— 启动即载入提取产物（http 服务下可用；file:// 直接打开请用「导入 JSON」按钮） */
+  useEffect(() => {
+    const src = new URLSearchParams(location.search).get("src");
+    if (!src) return;
+    fetch(src)
+      .then((r) => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then((flow) => applyFlow(flow, decodeURIComponent((src.split("/").pop() || "远程 JSON"))))
+      .catch((e) => alert("加载 " + src + " 失败：" + e.message));
+  }, [applyFlow]);
+
+  /* JSON 文件直接拖进窗口 = 导入；dragenter/over/leave 维持拖入遮罩显隐
+     dragDepth 计数器防子元素间 dragleave 误触发；isFileDrag 按 dataTransfer.types 含 "Files"
+     过滤（拖画布内节点不触发遮罩）；dragover 必须 preventDefault 否则浏览器直接打开文件 */
+  useEffect(() => {
+    let dragDepth = 0;
+    const isFileDrag = (e) => e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], "Files") !== -1;
+    const onEnter = (e) => {
+      if (!isFileDrag(e)) return;
+      e.preventDefault();
+      dragDepth += 1;
+      setDragActive(true);
+    };
+    const onOver = (e) => { if (isFileDrag(e)) e.preventDefault(); };
+    const onLeave = (e) => {
+      if (!isFileDrag(e)) return;
+      dragDepth -= 1;
+      if (dragDepth <= 0) { dragDepth = 0; setDragActive(false); }
+    };
+    const onDrop = (e) => {
+      if (!isFileDrag(e)) return;
+      e.preventDefault();
+      dragDepth = 0;
+      setDragActive(false);
+      const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      if (f) handleImport(f);
+    };
+    window.addEventListener("dragenter", onEnter);
+    window.addEventListener("dragover", onOver);
+    window.addEventListener("dragleave", onLeave);
+    window.addEventListener("drop", onDrop);
+    return () => {
+      window.removeEventListener("dragenter", onEnter);
+      window.removeEventListener("dragover", onOver);
+      window.removeEventListener("dragleave", onLeave);
+      window.removeEventListener("drop", onDrop);
+    };
+  }, [handleImport]);
+
+  /* 新增 to-be 函数节点：面板内填写（避免连环原生弹窗），落点为当前视口中心 */
+  const handleAddNode = useCallback(() => {
+    setShowAdd(v => !v);
+    setEditId(null);   // 与「修改节点信息」面板互斥：打开新增即关编辑，避免两个节点表单叠在右上角（setEditId 在下方声明，点击时才执行，不触发 TDZ）
+    setDraft({ name: "", sig: "", note: "" });   // 重新打开即清空草稿；关闭时重置也无妨
+  }, []);
+
+  /* 节点右键功能菜单：删除 / 复制 / 修改信息 */
+  const [ctxMenu, setCtxMenu] = useState(null);   // { nodeId, x, y }
+  const closeCtx = useCallback(() => setCtxMenu(null), []);
+
+  /* 删除节点：连同其相连边一并移除，并清掉可能指向该节点的源码/聚焦态 */
+  const deleteNode = useCallback((id) => {
+    setNodes((nds) => nds.filter((n) => n.id !== id));
+    setEdges((eds) => eds.filter((e) => e.source !== id && e.target !== id));
+    setCodeView((cv) => (cv && cv.nodeId === id ? null : cv));
+    setFocusId((fid) => (fid === id ? null : fid));
+  }, []);
+
+  /* 复制节点：生成一个偏移新节点（新 id），并复制其入/出边（端点重映射到新节点），保留原结构；
+     复制后只选中新节点（既有节点 selection 全部清掉，避免新旧同亮） */
+  const duplicateNode = useCallback((id) => {
+    const src = allNodes.find((n) => n.id === id);
+    if (!src) return;
+    const newId = "u" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+    setNodes((nds) => [
+      ...nds.map((n) => (n.selected ? { ...n, selected: false } : n)),
+      {
+        ...src, id: newId, selected: true,
+        position: { x: src.position.x + 48, y: src.position.y + 48 },
+        data: { ...src.data },
+      },
+    ]);
+    setEdges((eds) => eds.flatMap((e) => {
+      if (e.source === id) return [e, { ...e, id: e.id + "_dup" + newId, source: newId }];
+      if (e.target === id) return [e, { ...e, id: e.id + "_dup" + newId, target: newId }];
+      return [e];
+    }));
+  }, [allNodes]);
+
+  /* 修改节点信息：打开预填该节点数据的编辑面板（复用新增面板样式） */
+  const [editId, setEditId] = useState(null);
+  const [renamingId, setRenamingId] = useState(null);      // 正在重命名的图层 id
+  const [renameDraft, setRenameDraft] = useState("");      // 图层重命名草稿
+  const [editDraft, setEditDraft] = useState({ name: "", sig: "", note: "" });
+  const openEdit = useCallback((id) => {
+    const n = allNodes.find((x) => x.id === id);
+    if (!n) return;
+    setShowAdd(false);   // 与「新增节点」面板互斥：打开编辑即关新增
+    setEditDraft({
+      name: n.data.function || "", sig: n.data.signature || "", note: n.data.comment || "",
+    });
+    setEditId(id);
+  }, [allNodes, setShowAdd]);
+  const submitEditNode = useCallback(() => {
+    const name = editDraft.name.trim();
+    if (!name) return;
+    setNodes((nds) => nds.map((n) => n.id === editId ? {
+      ...n, data: {
+        ...n.data, function: name, signature: editDraft.sig, comment: editDraft.note,
+        file: n.data.file, line: n.data.line, endLine: n.data.endLine,   // file/行号均为源码派生元数据，不在面板内，保留原值
+      },
+    } : n));
+    setEditId(null);
+  }, [editId, editDraft]);
+
+  const submitAddNode = useCallback(() => {
+    const name = draft.name.trim();
+    if (!name) return;
+    let pos = { x: 0, y: 0 };
+    if (rfInstance.current && wrapperRef.current) {
+      const r = wrapperRef.current.getBoundingClientRect();
+      pos = rfInstance.current.project({ x: r.width / 2, y: r.height / 2 });
+    }
+    setNodes((nds) => [...nds, {
+      id: "u" + Date.now().toString(36),
+      type: "function",
+      position: pos,
+      data: { function: name, file: "(画布新增)", line: 0, signature: draft.sig, comment: draft.note },
+    }]);
+    setShowAdd(false);
+  }, [draft]);
+
+  /* 双击节点 = 编辑批注（写入 comment，随 JSON 导出——约定「批注」四部分之一） */
+  const onNodeDoubleClick = useCallback((ev, node) => {
+    const note = prompt("节点说明 / 批注（写入 comment 随 JSON 导出）", node.data.comment || "");
+    if (note === null) return;
+    setNodes((nds) => nds.map((n) => n.id === node.id
+      ? { ...n, data: { ...n.data, comment: note } } : n));
+  }, []);
+
+  /* 双击边 = 编辑标签（schema 的 label 字段：标数据含义，如 user / cart） */
+  const onEdgeDoubleClick = useCallback((ev, edge) => {
+    const label = prompt("边标签（数据含义；留空清除）",
+      typeof edge.label === "string" ? edge.label : "");
+    if (label === null) return;
+    setEdges((eds) => eds.map((e) => e.id === edge.id
+      ? { ...e, label: label || undefined } : e));
+  }, []);
+
+  /* 标签操作：切换 / 关闭 / 新建空标签。
+     切换不重挂载（不动 graphKey）；视口随槽走——离开时 snapLive 存本标签的缩放/平移，
+     进入时 loadSnapshot 恢复它自己的（各标签互不影响，即浏览器标签语义）。
+     槽内位置已排好，不重跑 relayout。均定义在全部 setter 声明之后，无 TDZ。 */
+  const switchTab = useCallback((id) => {
+    if (id === activeTabIdRef.current) return;
+    const target = tabsRef.current.find((t) => t.id === id);
+    if (!target) return;
+    const snap = snapLive();
+    setTabs((ts) => ts.map((t) => (t.id === activeTabIdRef.current ? { ...t, snapshot: snap } : t)));
+    loadSnapshot(target.snapshot);
+    setActiveTabId(id);
+  }, []);
+
+  const closeTab = useCallback((id) => {
+    const ts = tabsRef.current;
+    const idx = ts.findIndex((t) => t.id === id);
+    if (idx === -1) return;
+    const next = ts.filter((t) => t.id !== id);
+    if (id !== activeTabIdRef.current) { setTabs(next); return; }
+    // 关闭激活标签：当前内容丢弃（数据来自文件可重导），切到相邻标签
+    const neighbor = next[Math.max(0, idx - 1)] || null;
+    setTabs(next.map((t) => (neighbor && t.id === neighbor.id ? { ...t, snapshot: null } : t)));
+    loadSnapshot(neighbor ? neighbor.snapshot : null);
+    setActiveTabId(neighbor ? neighbor.id : null);
+  }, []);
+
+  const openBlankTab = useCallback(() => {
+    const snap = snapLive();
+    const newId = "t" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+    setTabs((ts) => {
+      const base = activeTabIdRef.current ? ts.map((t) => (t.id === activeTabIdRef.current ? { ...t, snapshot: snap } : t)) : ts;
+      return [...base, { id: newId, name: "画布 " + (base.length + 1), snapshot: null, origin: null }];
+    });
+    setActiveTabId(newId);
+    loadSnapshot(null);
+  }, []);
+
+  /* 图层重命名提交：空名回退原名 */
+  const commitRename = useCallback(() => {
+    const name = renameDraft.trim();
+    setTabs((ts) => ts.map((t) => (t.id === renamingId ? { ...t, name: name || t.name } : t)));
+    setRenamingId(null);
+  }, [renamingId, renameDraft]);
+
+  /* 左抽屉伸缩：滑动 250ms 内小地图在移动，视图框需逐帧跟随
+     （修 bug：视图框只在 onMove/节点变化/resize 时重算，抽屉 CSS transition 没有触发器） */
+  const toggleLayers = useCallback(() => {
+    setLayersOpen((v) => !v);
+    const t0 = performance.now();
+    const step = () => { updateMiniFrame(); if (performance.now() - t0 < 300) requestAnimationFrame(step); };
+    requestAnimationFrame(step);
+  }, []);
+
+  /* 清空画布：清空当前图层内容（不删图层、不退遮罩层），停在空画布；其他图层不受影响 */
+  const clearCanvas = useCallback(() => {
+    if (!window.confirm("清空当前画布？当前图层的节点 / 连线 / 改动意图将被清空（其他图层不受影响）。")) return;
+    setNodes([]);
+    setEdges([]);
+    setProjectRoot(undefined);
+    setImportIslands(new Set());
+    setLanguage(undefined);
+    setIntent("");
+    setFocusId(null);
+    setCodeView(null);
+    setShowAdd(false);
+    setEditId(null);
+    setCtxMenu(null);
+    setPendingRelayout(false);
+  }, [setNodes, setEdges, setProjectRoot, setImportIslands, setIntent, setFocusId,
+      setCodeView, setShowAdd, setEditId, setCtxMenu]);
+
+  /* 重置图层：把当前图层还原成导入时的初始 JSON（丢弃画布手工改动）；空白图层无初始 JSON。
+     origin 在图层创建时存入槽位，导入后不变，无需快照同步。 */
+  const resetCanvas = useCallback(() => {
+    const cur = tabsRef.current.find((t) => t.id === activeTabIdRef.current);
+    if (!cur || !cur.origin) { alert("当前图层是空白画布，没有初始 JSON 可重置。"); return; }
+    if (!window.confirm("重置当前图层？画布将还原成导入时的初始 JSON，手工改动（补节点/补边/批注）将被丢弃。")) return;
+    const { nodes: ns, edges: es } = toReactFlow(cur.origin);
+    setNodes(ns); setEdges(es); setProjectRoot(cur.origin.projectRoot);
+    setImportIslands(new Set(
+      (cur.origin.nodes || []).filter((n) => !(cur.origin.edges || []).some((e) => e.from === n.id || e.to === n.id)).map((n) => n.id)
+    ));
+    setIntent(cur.origin.intent || "");
+    setLanguage(cur.origin.language);   // 还原源语言
+    setCodeView(null); setFocusId(null); setCtxMenu(null); setEditId(null); setShowAdd(false);
+    setPendingRelayout(true);   // 重新量高重排
+    setGraphKey((k) => k + 1);  // 重挂载 → fitView
+  }, []);
+
+  return html`
+    <div className="ff-app">
+      <div className="ff-toolbar">
+        <span className="ff-brand">AI-<span>FunctionTopo</span></span>
+        <button className=${"ff-help-btn" + (showHelp ? " active" : "")} title="使用方法（再点一次收起）" onClick=${() => setShowHelp(v => !v)}>!</button>
+        <span className="ff-stat">
+          显示 ${nodes.length}/${allNodes.length} 函数 · ${edges.length} 连接
+          ${projectRoot ? " · " + projectRoot : ""}
+        </span>
+        ${focusName && html`
+          <span className="ff-focus-chip" title="聚焦模式：只显示 ±${FOCUS_HOPS} 跳上下游；Esc 或 ✕ 退出">
+            ◎ 聚焦 ${focusName}
+            <button className="ff-chip-x" onClick=${() => setFocusId(null)}>✕</button>
+          </span>
+        `}
+        <span className="ff-legend" title="流入 = 有多少条数据流边汇入该节点；流入越多，改动牵连越广">
+          <i className="dot warn"></i>流入≥5 <i className="dot hot"></i>≥10
+        </span>
+        <label className="ff-toggle" title="零连接（无任何边）的孤岛节点默认不画">
+          <input type="checkbox" checked=${hideIslands}
+                 onChange=${(e) => setHideIslands(e.target.checked)} />
+          隐藏孤岛节点
+        </label>
+        <div className="ff-actions">
+          <button className=${"ff-btn" + (showAdd ? " active" : "")} onClick=${handleAddNode}
+                  title="新增 to-be 函数节点（编排/新函数，画布重排用）；再点一次收起">＋ 节点</button>
+          <button className="ff-btn" onClick=${() => setPendingRelayout(true)}
+                  title="金字塔→方块：按真实节点高度把高塔列展开成横向方块">重排布局</button>
+          <button className="ff-btn" onClick=${clearCanvas}
+                  title="清空当前图层的节点 / 连线 / 改动意图（其他图层不受影响，需二次确认）">清空画布</button>
+          <button className="ff-btn" onClick=${resetCanvas}
+                  title="把当前图层还原成导入时的初始 JSON（丢弃画布手工改动；空白图层无初始 JSON）">重置图层</button>
+          <button className="ff-btn" onClick=${openBlankTab}
+                  title="新开一个空白图层（已有图层保留）">新建画布</button>
+          <label className="ff-btn">
+            导入 JSON
+            <input type="file" accept="application/json,.json" style=${{ display: "none" }}
+                   onChange=${(e) => { const f = e.target.files && e.target.files[0]; if (f) handleImport(f); e.target.value = ""; }} />
+          </label>
+          <button className="ff-btn primary" onClick=${handleExport}>导出 JSON</button>
+        </div>
+      </div>
+      <div className="ff-main">
+        <div className=${"ff-canvas-wrap" + (layersOpen ? " layers-open" : "")} ref=${wrapperRef}>
+          <${NodeActionsCtx.Provider} value=${{ viewCode: showCode, focus: focusNode, codeViewId: codeView && codeView.nodeId, deleteEdge: (id) => setEdges((eds) => eds.filter((e) => e.id !== id)) }}>
+        <${Flow} key=${graphKey} className="ff-canvas"
+          nodes=${nodes} edges=${animatedEdges} nodeTypes=${nodeTypes} edgeTypes=${edgeTypes}
+              onNodesChange=${onNodesChange} onEdgesChange=${onEdgesChange} onConnect=${onConnect}
+              onNodeDoubleClick=${onNodeDoubleClick} onEdgeDoubleClick=${onEdgeDoubleClick}
+              onNodeContextMenu=${(ev, node) => { ev.preventDefault(); setCtxMenu({ nodeId: node.id, x: ev.clientX, y: ev.clientY }); }}
+              onInit=${(inst) => { rfInstance.current = inst; }}
+              onMove=${() => requestAnimationFrame(updateMiniFrame)}
+              onNodeDragStart=${(ev, node) => { draggingRef.current = true; }}
+              onNodeDragStop=${(ev, node) => { draggingRef.current = false; updateMiniFrame(); }}
+              fitView fitViewOptions=${{ padding: 0.2 }}
+              minZoom=${0.05} maxZoom=${2.5}
+              proOptions=${{ hideAttribution: true }}
+              defaultEdgeOptions=${{ type: "functionflow", animated: true,
+                style: { stroke: "var(--primary)", strokeWidth: 1.5 } }}>
+              <${Background} variant=${BackgroundVariant.Dots} gap=${16} size=${1} color=${"rgba(139,148,158,.2)"} />
+              <${Controls} />
+              <${MiniMap} style=${{ width: 200, height: 132 }}
+                nodeColor=${() => "rgba(107,138,253,.5)"} maskColor=${"rgba(21,26,33,.6)"} />
+            <//>
+          <//>
+          ${hasFlow && html`<div className="ff-minimap-frame"><i ref=${miniFrameRef}></i></div>`}
+          ${showAdd && html`
+            <div className="ff-addpanel" style=${{ right: sidebarOpen ? 372 : 12 }}>
+              <div className="ff-addpanel-title">新增 to-be 函数节点</div>
+              <input className="ff-input" placeholder="函数名（必填，如 process_order）"
+                     value=${draft.name}
+                     onInput=${(e) => setDraft({ ...draft, name: e.target.value })} />
+              <input className="ff-input" placeholder="签名（可空，如 (user_id: int) -> Order）"
+                     value=${draft.sig}
+                     onInput=${(e) => setDraft({ ...draft, sig: e.target.value })} />
+              <input className="ff-input" placeholder="说明 / 批注（可空）"
+                     value=${draft.note}
+                     onInput=${(e) => setDraft({ ...draft, note: e.target.value })} />
+              <div className="ff-addpanel-actions">
+                <button className="ff-btn" onClick=${() => setShowAdd(false)}>取消</button>
+                <button className="ff-btn primary" disabled=${!draft.name.trim()} onClick=${submitAddNode}>加入画布</button>
+              </div>
+            </div>
+          `}
+          ${ctxMenu && html`
+            <div className="ff-ctx-mask" onMouseDown=${closeCtx}
+                 onContextMenu=${(e) => { e.preventDefault(); closeCtx(); }}></div>
+            <div className="ff-ctx-menu" style=${{
+              left: Math.min(ctxMenu.x, (typeof window !== "undefined" ? window.innerWidth : 9999) - 180) + "px",
+              top: Math.min(ctxMenu.y, (typeof window !== "undefined" ? window.innerHeight : 9999) - 140) + "px",
+            }}>
+              <button className="ff-ctx-item danger" onClick=${() => { const id = ctxMenu.nodeId; closeCtx(); deleteNode(id); }}>删除节点</button>
+              <button className="ff-ctx-item" onClick=${() => { const id = ctxMenu.nodeId; closeCtx(); duplicateNode(id); }}>复制节点</button>
+              <button className="ff-ctx-item" onClick=${() => { const id = ctxMenu.nodeId; closeCtx(); openEdit(id); }}>修改节点信息</button>
+            </div>
+          `}
+          ${editId && html`
+            <div className="ff-addpanel" style=${{ right: sidebarOpen ? 372 : 12 }}>
+              <div className="ff-addpanel-title">修改节点信息</div>
+              <div>
+                <input className="ff-input" placeholder="函数名（必填）" value=${editDraft.name}
+                       onInput=${(e) => setEditDraft({ ...editDraft, name: e.target.value })} />
+                <div className="ff-field-hint">节点的函数名，导出 JSON 时作为 function 字段；改名即改画布节点标题。</div>
+              </div>
+              <div>
+                <input className="ff-input" placeholder="签名（可空）" value=${editDraft.sig}
+                       onInput=${(e) => setEditDraft({ ...editDraft, sig: e.target.value })} />
+                <div className="ff-field-hint">函数签名，如 (user_id: int) -> Order；随 JSON 导出（functionflow/v1 的 data.signature 字段），并用于画布展示。</div>
+              </div>
+              <div>
+                <input className="ff-input" placeholder="说明 / 批注（可空）" value=${editDraft.note}
+                       onInput=${(e) => setEditDraft({ ...editDraft, note: e.target.value })} />
+                <div className="ff-field-hint">对该节点的说明，随 JSON 导出（intent 之外的批注层）。</div>
+              </div>
+              <div className="ff-field-hint">注：文件 / 行号是源码派生元数据，不在本面板编辑，保留导入原值。</div>
+              <div className="ff-addpanel-actions">
+                <button className="ff-btn" onClick=${() => setEditId(null)}>取消</button>
+                <button className="ff-btn primary" disabled=${!editDraft.name.trim()} onClick=${submitEditNode}>保存</button>
+              </div>
+            </div>
+          `}
+          ${!hasFlow && html`
+            <div className="ff-empty">
+              <div className="ff-empty-card">
+                <div className="ff-empty-title">AI-<span>FunctionTopo</span></div>
+                <div className="ff-empty-sub">把 functionflow/v1 JSON 拖进窗口，开始函数级审查</div>
+                <div className="ff-empty-actions">
+                  <label className="ff-btn">
+                    选择文件
+                    <input type="file" accept="application/json,.json" style=${{ display: "none" }}
+                           onChange=${(e) => { const f = e.target.files && e.target.files[0]; if (f) handleImport(f); e.target.value = ""; }} />
+                  </label>
+                  <button className="ff-btn primary" onClick=${() => applyFlow(EMBEDDED_FLOW, "orders 示例")}>载入 orders 示例</button>
+                  <button className="ff-btn" onClick=${openBlankTab}
+                          title="新开一个空白标签页，可用「＋节点」手工编排 to-be 函数节点；已有图会保留在自己的标签里">＋ 新增空画布</button>
+                </div>
+                <div className="ff-empty-hint">http 服务下也可用 ?src=ff_workspace/<订单>/json/xxx.json 直载提取产物</div>
+              </div>
+            </div>
+          `}
+          ${dragActive && html`
+            <div className="ff-drop">
+              <div className="ff-drop-box">
+                <div className="ff-drop-title">松开以导入</div>
+                <div className="ff-drop-sub">把 functionflow/v1 JSON 拖进来，开始函数级审查</div>
+              </div>
+            </div>
+          `}
+          ${showHelp && html`
+            <div className="ff-help-mask" onClick=${() => setShowHelp(false)}>
+              <div className="ff-help-card" onClick=${(e) => e.stopPropagation()}>
+                <div className="ff-help-head">
+                  <b>AI-FunctionTopo · 使用方法</b>
+                  <span className="sp"></span>
+                  <button type="button" className="ff-help-close" onClick=${() => setShowHelp(false)}>✕</button>
+                </div>
+                <div className="ff-help-body">
+                <ul>
+                  <li><b>导入图</b>：把 <code>functionflow/v1</code> JSON 直接拖进窗口，或点工具栏「导入 JSON」——都会开成<b>新图层</b>，不覆盖已打开的图；http 服务下可用 <code>?src=ff_workspace/<订单>/json/xxx.json</code> 直载。空态遮罩里也可「载入 orders 示例」，或「＋ 新增空画布」从零编排。</li>
+                  <li><b>图层面板</b>：左侧栏，一个载入文件 = 一个图层；点击切换审查不同图流（origin / after 版本对照，py1 / py2 / py3 关联），每个图层记住自己的缩放与平移，双击图层名可重命名，✕ 关闭单个，‹ 把手可收起面板。</li>
+                  <li><b>节点</b>：<code>ƒ</code> 函数名 + 签名 + 批注 + 文件位置。右上角 <b>◎</b> 聚焦该函数的上下游，<b>{ }</b> 在右侧栏看源码（命中行号区间高亮，再点一次取消展示）；画布新增的 to-be 节点点 <b>{ }</b> 会提示「暂无源码」。</li>
+                  <li><b>右键节点</b>：删除节点 / 复制节点（复制后只选中新副本，边一并复制）/ 修改节点信息（函数名、签名、批注；文件与行号属源码派生值，不在面板内修改）。</li>
+                  <li><b>边</b>：拖端口连边；双击编标签（数据含义，如 <code>user</code> / <code>cart</code>）；<b>点击选中</b>边后中点浮现 ✕ 删除，选中的边整条变白高亮。</li>
+                  <li><b>流入预警</b>：琥珀 ≥5、红 ≥10。流入越高，改动牵连越广，越要谨慎。</li>
+                  <li><b>改动意图</b>：右侧栏「改动意图」写一句话注脚（函数名用引号锚定节点），导出 JSON 时作为 <code>intent</code> 字段一并带上，交给 AI 改码。</li>
+                  <li><b>隐藏孤岛</b>：导入时零连接的孤岛节点默认不画，可在工具栏切换；删边产生的孤岛保留可见（不会因删一条边连节点一起消失）。</li>
+                  <li><b>重排布局</b>：按真实节点高度把提取器输出的「金字塔」高塔列展开成横向方块。导入后自动跑一次；手工拖乱或新加节点后，可再点一次重新规整。</li>
+                  <li><b>大图性能</b>：边数超过 30 条时自动转为实线（仅选中边保留流动动画），拖拽节点时跳过小地图重算 —— 加载 core.json 这类大图更顺滑。</li>
+                  <li><b>小地图</b>：左下角，亮区即当前视口，暗区为画布其余；滚轮缩放、拖拽平移。</li>
+                  <li><b>导出 / 重置</b>：「导出 JSON」把当前图存回 <code>functionflow/v1</code>，可再次导入或喂给 AI（已剔除时间戳、重复类型、占位零值等噪音；坐标保留，回导时用于恢复拓扑分层）。「清空画布」清空当前图层内容后停在空画布（其他图层不受影响，需二次确认）；「新建画布」新开一个空白图层；「重置图层」把当前图层还原成导入时的初始 JSON（丢弃手工改动）。</li>
+                </ul>
+                </div>
+              </div>
+            </div>
+          `}
+        </div>
+
+        ${hasFlow && html`
+          <aside className=${"ff-layers" + (layersOpen ? "" : " closed")}>
+            <button className="ff-layers-handle" onClick=${toggleLayers}
+                    title=${layersOpen ? "收起图层栏" : "展开图层栏"}>${layersOpen ? "‹" : "›"}</button>
+            <div className="ff-layers-head"><b>图层</b><span className="sp"></span><span>${tabs.length}</span></div>
+            <div className="ff-layers-list">
+              ${tabs.map((t) => html`
+                <div key=${t.id} className=${"ff-layer-row" + (t.id === activeTabId ? " active" : "")}
+                     onClick=${() => switchTab(t.id)}
+                     onDoubleClick=${(e) => { e.stopPropagation(); setRenamingId(t.id); setRenameDraft(t.name); }}
+                     title=${t.name + "（单击切换 · 双击重命名）"}>
+                  ${renamingId === t.id ? html`
+                    <input className="ff-layer-rename" value=${renameDraft} autoFocus
+                           onClick=${(e) => e.stopPropagation()}
+                           onInput=${(e) => setRenameDraft(e.target.value)}
+                           onKeyDown=${(e) => { if (e.key === "Enter") commitRename(); else if (e.key === "Escape") setRenamingId(null); }}
+                           onBlur=${commitRename} />
+                  ` : html`
+                    <span className="ff-layer-name">${t.name}</span>
+                  `}
+                  <button className="ff-layer-x" onClick=${(e) => { e.stopPropagation(); closeTab(t.id); }}
+                          title="关闭此图层（数据来自文件，可重新导入）">✕</button>
+                </div>
+              `)}
+            </div>
+          </aside>
+        `}
+        <aside className=${"ff-sidebar" + (sidebarOpen ? "" : " closed")} ref=${sidebarRef}>
+          <button className="ff-sidebar-handle" onClick=${toggleSidebar}
+                  title=${sidebarOpen ? "收起侧栏" : "拉出侧栏"}>
+            ${sidebarOpen ? "›" : "‹"}
+          </button>
+          <div className="ff-pane" style=${{ flex: `0 0 ${intentH}px` }}>
+            <div className="ff-pane-head"><b>改动意图</b></div>
+            <textarea className="ff-intent"
+              placeholder="用一句话说明这张图表达的流程 / 重排意图（函数名用引号锚定节点，如新增「process_order」串联…）"
+              value=${intent} onInput=${(e) => setIntent(e.target.value)}></textarea>
+            <div className="ff-intent-foot">注脚 · 导出 / 复制 JSON 时作为 intent 字段一并带上</div>
+          </div>
+          <div className="ff-pane-split" onMouseDown=${startSplit} title="拖动调整上下高度"></div>
+          <div className="ff-pane" style=${{ flex: 1 }}>
+            <div className="ff-pane-head"><b>源码</b><span className="sp"></span>
+              <span className="file mono">${codeView ? codeView.file + " · " + codeView.fn + "()" : "未选择节点"}</span>
+            </div>
+            <div className="ff-code-body" ref=${codeBodyRef}>
+              ${!codeView && html`
+                <div className="ff-code-empty">点节点右上角的 <b>{ }</b> 按钮，在这里查看该函数源码（函数行号区间高亮）。</div>`}
+              ${codeView && codeView.status === "loading" && html`
+                <div className="ff-code-empty">读取源码中…</div>`}
+              ${codeView && codeView.status === "empty" && html`
+                <div className="ff-code-empty">该函数为画布新增的 <b>to-be</b> 节点，暂无源码文件可查看。</div>`}
+              ${codeView && codeView.status === "error" && html`
+                <div className="ff-code-empty">无法读取 ${codeView.file}<br/>file:// 直接打开受浏览器限制，请用 HTTP 环境预览：<br/><code>python -m http.server 8642</code></div>`}
+              ${codeView && codeView.status === "ok" && codeView.text.split("\n").map((t, i) => {
+                const ln = i + 1;
+                const hit = ln >= codeView.line && ln <= codeView.endLine;
+                return html`
+                  <div key=${ln} className=${"code-line" + (hit ? " hit" : "")}>
+                    <span className="ln">${ln}</span>
+                    <span className="lc" dangerouslySetInnerHTML=${{ __html: hlLine(t) }}></span>
+                  </div>`;
+              })}
+            </div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  `;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(html`<${FlowCanvas} />`);
+</script>
+</body>
+</html>
