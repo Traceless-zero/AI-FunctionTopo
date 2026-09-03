@@ -20,14 +20,12 @@
 ```bash
 python extract_flow.py ff_workspace/orders/scripts                # ast 版（纯标准库零依赖）
 python extract_flow_ts.py ff_workspace/orders/scripts -o out.json # Tree-sitter 版（py/js/ts，与 ast 版产出全等）
-python extract_flow_ts.py ff_workspace/samples/aimh --focus query_anchors --hops 1   # 子图：回 20-30 节点可读规模
-python extract_flow_ts.py ff_workspace/samples/aimh --focus _conn --dir up --hops 2  # 改动影响面（上游调用方）
+python extract_flow_ts.py ff_workspace/orders/scripts --focus create_order --hops 1  # 子图：按入口取 ±N 跳
+python extract_flow_ts.py ff_workspace/orders/scripts --dir up --focus _order_no     # 改动影响面（上游调用方）
 python extract_flow.py ff_workspace/orders/scripts --strip-position  # AI 消费形态（剥离画布坐标）
 ```
 
 Tree-sitter 版依赖：`pip install tree-sitter tree-sitter-python tree-sitter-javascript tree-sitter-typescript`
-
-> 注：`ff_workspace/samples/aimh` 若不在本地（工作区不入 git），可对任意真实项目源码跑同样命令。
 
 ## 画布功能
 
