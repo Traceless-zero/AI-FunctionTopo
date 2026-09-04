@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<html lang="zh-CN" data-page-node-id="m1LHfLE4tr3Z39dih43YZQ">
+<head data-page-node-id="JoD20DZFpNAWbOO1fOvwRv">
+<meta charset="UTF-8" data-page-node-id="USZwsEU8Kz7ac9L6hFyRhE" />
+<meta name="viewport" content="width=device-width, initial-scale=1" data-page-node-id="ML9N0Eu1Vlt0yXpWijV9F9" />
 <title>AI-FunctionTopo · 画布</title>
-<link rel="stylesheet" href="vendor/reactflow.css" />
+<link rel="stylesheet" href="vendor/reactflow.css" data-page-node-id="X3pM6CAYV5D5lfVEdImxKH" />
 <style>
   /* 沿用 demo.html 的暗色体系；shadcn 风格 CSS 变量本地定义，无构建依赖 */
   :root {
@@ -404,8 +404,8 @@
   }
 </style>
 </head>
-<body>
-<div id="root"></div>
+<body data-page-node-id="PVvJrNacOQNNM1jfL9O8EX">
+<div id="root" data-page-node-id="lLVFMKLsfe7xWWnNIJ3hr9"></div>
 <script src="vendor/react.production.min.js"></script>
 <script src="vendor/react-dom.production.min.js"></script>
 <script src="vendor/reactflow-umd.js"></script>
@@ -467,8 +467,10 @@ const EMBEDDED_FLOW = {
 /* ---------- FunctionFlowFile <-> ReactFlow 数据 ---------- */
 function toReactFlow(flow) {
   return {
-    // position 兜底：手写/旧 JSON 可能缺 position，而 relayoutNodes 要读 n.position.x 分簇，缺了会 TypeError
-    nodes: flow.nodes.map((n) => ({ id: n.id, type: "function", position: n.position || { x: 0, y: 0 }, data: n.data })),
+    // position 一律归零：坐标不进 schema（fromReactFlow 已剔除），导入后必跑 relayout 全量重排，
+    // JSON 里残留的旧算法坐标（如 aimh_core 早期导出 x≈182200 的极值）只会污染重挂载 fitView
+    // 与 MiniMap bbox（正反馈把 zoom 焊死在 minZoom）。画布新增节点读的是 state，不受影响。
+    nodes: flow.nodes.map((n) => ({ id: n.id, type: "function", position: { x: 0, y: 0 }, data: n.data })),
     edges: flow.edges.map((e) => ({
       id: e.id, source: e.from, target: e.to, label: e.label,
       type: "functionflow", animated: true,
@@ -522,54 +524,149 @@ function hlLine(line) {
   });
 }
 
-  /* ---------- 金字塔→方块（自 demo.html relayout 移植）：
-     把高塔列展开成 2D 方块：列优先填满 ROWS_CAP 行再开子列，行距按该行最高节点定，
-     整体"多左右、少上下"。
-     深度来源（P1 终形态）：调用图最长路径松弛——与提取器 extract_flow.py 同款算法，
-     纯渲染侧可算，JSON 不再携带坐标；手工编排图 / AI 改过的图 / 无坐标 JSON 一视同仁，
-     塌层问题（P3）不复存在。层内排序改按 data.line（与提取器一致），无行号回退 id。 ---------- */
-  function relayoutNodes(nds, es) {
-    const COL_W = 300, ROWS_CAP = 7, ROW_MARGIN = 26, LAYER_GAP = 70;
-    const BASE_X = 40, TOP_Y = 0, NODE_W = 260, DEF_H = 90;
-    // 最长路径松弛：level[to] = max(level[to], level[from] + 1)，迭代至不动点（有环也有界）
+  /* ---------- 坐标系布局（替代旧「金字塔→方块」）：原点在画布中心，每列绕 Y 轴上下居中 ----------
+     深度来源：调用图最长路径松弛求 level（与提取器同款，纯渲染侧可算，JSON 不携带坐标）。
+     手工编排图 / AI 改过的图 / 无坐标 JSON 一视同仁，塌层问题不复存在。
+     坐标：x = (层深 − 最大层/2) × 列宽——各列绕原点 X 对称铺开；
+           y = 每列按【真实高度】绕原点 Y 居中分布（总高 H 的列从 −H/2 向下排），
+               单列节点正好落在 Y 轴上（纵向居中），多列按节点数对称上下展开。
+     层内排序初值按 data.line（AST 图），手绘图无 line 退回 id；随后跑 barycenter 中位
+     交叉消除（down/up 各扫），自动按邻居位置重排，大幅减少边交叉、无需手动拉线。 ---------- */
+  function relayoutNodes(nds, es, heights) {
+    // ===== 坐标系布局：原点(0,0)置于画布中心；x 各列绕原点对称、y 每列绕原点 Y 居中 =====
+    // heights: 可选，id→真实渲染高度(px)；传入则同列按真实高度累加并居中排 y，防内容高节点纵向重叠
+    const NODE_W = 260, NODE_H = 110, COL_GAP = 90, ROW_GAP = 30;
+    const ORIGIN_X = 0, ORIGIN_Y = 0;
+
+    // 1) 分层：SCC 缩点抗环 + 最长路径松弛。
+    //    纯松弛遇调用环不收敛：aimh_core 实测环节点被越推越高，层号爆到 503-506（x 极值 ±8.8 万 px）；
+    //    BFS 兜底虽抗环但按最短跳数压扁链深（16 层 → 7 列，L0 一列 101 节点）。
+    //    正解：Tarjan 求强连通分量——环内节点缩成一个超节点（互相调用无法分先后，同层语义正确），
+    //    分量 DAG 上跑最长路径必收敛；无环图每节点自成一分量，结果与纯松弛逐字节一致（回归安全）。
     const level = new Map(nds.map((n) => [n.id, 0]));
     if (es && es.length) {
-      for (let i = 0; i <= nds.length; i++) {
+      const adjList = new Map(nds.map((n) => [n.id, []]));
+      for (const e of es) {
+        if (adjList.has(e.source) && adjList.has(e.target)) adjList.get(e.source).push(e.target);
+      }
+      // Tarjan（迭代式，防深链爆栈）：comp: 节点 id → 分量号
+      const comp = new Map();
+      const num = new Map(), low = new Map(), onstk = new Set();
+      const tstk = []; let counter = 0, compN = 0;
+      for (const start of nds) {
+        if (num.has(start.id)) continue;
+        const call = [[start.id, 0]];
+        while (call.length) {
+          const fr = call[call.length - 1], v = fr[0];
+          if (fr[1] === 0) { num.set(v, counter); low.set(v, counter); counter++; tstk.push(v); onstk.add(v); }
+          const outs = adjList.get(v) || [];
+          let advanced = false;
+          while (fr[1] < outs.length) {
+            const w = outs[fr[1]];
+            fr[1]++;
+            if (!num.has(w)) { call.push([w, 0]); advanced = true; break; }
+            if (onstk.has(w)) low.set(v, Math.min(low.get(v), num.get(w)));
+          }
+          if (advanced) continue;
+          if (low.get(v) === num.get(v)) {
+            for (;;) { const w = tstk.pop(); onstk.delete(w); comp.set(w, compN); if (w === v) break; }
+            compN++;
+          }
+          call.pop();
+          if (call.length) {
+            const p = call[call.length - 1][0];
+            low.set(p, Math.min(low.get(p), low.get(v)));
+          }
+        }
+      }
+      // 分量级最长路径松弛：SCC 已无环必收敛；同分量边（环内边）不推层 → 环内节点强制同层
+      const clevel = new Map();
+      for (let i = 0; i <= compN; i++) {
         let changed = false;
         for (const e of es) {
-          if (!level.has(e.source) || !level.has(e.target)) continue;
-          if (level.get(e.target) < level.get(e.source) + 1) {
-            level.set(e.target, level.get(e.source) + 1);
+          const cs = comp.get(e.source), ct = comp.get(e.target);
+          if (cs === undefined || ct === undefined || cs === ct) continue;
+          if ((clevel.get(ct) || 0) < (clevel.get(cs) || 0) + 1) {
+            clevel.set(ct, (clevel.get(cs) || 0) + 1);
             changed = true;
           }
         }
         if (!changed) break;
       }
+      for (const n of nds) level.set(n.id, clevel.get(comp.get(n.id)) || 0);
     }
+
+    // 2) 按层深分组，同层初始序：AST 图用 data.line，手绘图退回 id
     const byDepth = {};
     for (const n of nds) (byDepth[level.get(n.id)] ||= []).push(n);
+    const depths = Object.keys(byDepth).map(Number).sort((a, b) => a - b);
+    const order = {};
+    for (const d of depths) {
+      order[d] = byDepth[d]
+        .slice()
+        .sort((a, b) => (a.data.line || 0) - (b.data.line || 0) || a.id.localeCompare(b.id))
+        .map((n) => n.id);
+    }
 
+    // 3) barycenter 中位交叉消除：down/up 各扫，按邻居位置重排层内序（手绘图无 line 时靠邻居序）
+    const adj = {};
+    for (const e of es) {
+      const s = level.get(e.source), t = level.get(e.target);
+      if (s === undefined || t === undefined || s >= t) continue;
+      (adj[e.target] = adj[e.target] || {}).up = (adj[e.target].up || []).concat({ id: e.source, d: s });
+      (adj[e.source] = adj[e.source] || {}).down = (adj[e.source].down || []).concat({ id: e.target, d: t });
+    }
+    const idxIn = (d, id) => order[d].indexOf(id);
+    for (let sweep = 0; sweep < 6; sweep++) {
+      const down = sweep % 2 === 0;
+      const seq = down ? depths : depths.slice().reverse();
+      for (const d of seq) {
+        const arr = order[d];
+        if (arr.length < 2) continue;
+        const bary = {};
+        for (const id of arr) {
+          const nb = (down ? (adj[id] && adj[id].down) : (adj[id] && adj[id].up)) || [];
+          if (!nb.length) { bary[id] = idxIn(d, id); continue; }
+          let s = 0;
+          for (const n of nb) s += idxIn(n.d, n.id);
+          bary[id] = s / nb.length;
+        }
+        arr.sort((a, b) => bary[a] - bary[b] || a.localeCompare(b.id));
+      }
+    }
+
+    // 3.5) 列容量折行：每列最多 COL_CAP 个节点，超出横向折为子列。
+    //      不折行的话 aimh_core 的 L0 一列堆 50 个可见节点，列高 ±5000px 成 y 极值，
+    //      fitView 为塞下全图把 zoom 压到 ~0.08 → 节点缩成蚂蚁（旧算法 ROWS_CAP=7
+    //      正是防这个的，坐标系版把折行弄丢了，这里补回同款机制）。
+    const COL_CAP = 8;
+    const cols = [];   // 子列序列：按层序、层内块序拼接（barycenter 已排好层内序，块间保序）
+    for (const d of depths) {
+      const ids = order[d];
+      for (let i = 0; i < ids.length; i += COL_CAP) cols.push(ids.slice(i, i + COL_CAP));
+    }
+
+    // 4) 坐标赋值：原点(0,0)置于画布中心——
+    //    x：按【子列全局序】绕原点对称铺开（x = (子列序 − (子列数−1)/2) × 列宽），
+    //      对层号洞免疫，列距恒等于 colW。
+    //    y：每子列按【真实高度】绕原点 Y 居中（总高 H 从 −H/2 起向下排），
+    //       单节点子列中心正好落在 X 轴(y=0)，多节点按节点数对称上下展开。
+    const colW = NODE_W + COL_GAP;
+    const half = (cols.length - 1) / 2;
     const out = new Map();
-    let layerX = BASE_X;
-    for (const d of Object.keys(byDepth).map(Number).sort((a, b) => a - b)) {
-      const g = byDepth[d].slice().sort((a, b) => (a.data.line || 0) - (b.data.line || 0) || a.id.localeCompare(b.id));
-      const cols = Math.max(1, Math.ceil(g.length / ROWS_CAP));
-      const rows = Math.ceil(g.length / cols);
-      const rowMax = Array(rows).fill(0);
-      g.forEach((nd, idx) => {
-        const el = document.querySelector('.react-flow__node[data-id="' + nd.id + '"]');
-        const h = el ? el.offsetHeight : DEF_H;
-        const rr = idx % rows;
-        if (h > rowMax[rr]) rowMax[rr] = h;
-      });
-      const rowY = [];
-      let y = TOP_Y;
-      for (let r = 0; r < rows; r++) { rowY.push(y); y += rowMax[r] + ROW_MARGIN; }
-      g.forEach((nd, idx) => {
-        const rr = idx % rows, cc = Math.floor(idx / rows);
-        out.set(nd.id, { x: Math.round(layerX + cc * COL_W), y: Math.round(rowY[rr]) });
-      });
-      layerX += (cols - 1) * COL_W + NODE_W + LAYER_GAP;
+    for (let ci = 0; ci < cols.length; ci++) {
+      const ids = cols[ci];
+      let H = 0;
+      for (let k = 0; k < ids.length; k++) {
+        const h = (heights && heights.get(ids[k])) || NODE_H;
+        H += h + (k > 0 ? ROW_GAP : 0);   // 列总高 = 各节点真实高 + (n-1)·行距
+      }
+      let y = -H / 2;   // 居中起点：列整体绕原点 Y 对称
+      for (const id of ids) {
+        const h = (heights && heights.get(id)) || NODE_H;
+        out.set(id, { x: ORIGIN_X + (ci - half) * colW, y });
+        y += h + ROW_GAP;
+      }
     }
     return nds.map((n) => (out.has(n.id) ? { ...n, position: out.get(n.id) } : n));
   }
@@ -796,19 +893,52 @@ function FlowCanvas() {
     const run = () => {
       if (cancelled) return;
       const nds = nodesRef.current;
-      let retry = false;
+      const heights = new Map();
+      const offDom = new Set();   // 不在 DOM 的节点（被「隐藏孤岛」等视图过滤剔除）
+      let pending = 0;            // 已挂载但高度未提交（需再等一帧）
       for (const n of nds) {
         const el = document.querySelector('.react-flow__node[data-id="' + n.id + '"]');
-        if (el && el.offsetHeight < 40) { retry = true; break; }   // 渲染未提交完
+        if (!el) { offDom.add(n.id); continue; }   // 查不到 ≠ 渲染中：视图过滤根本不挂载，等也等不来（aimh_core 101 个隐藏孤岛曾把 15 次重试全耗光 → 全图回退 110 → 可见节点纵向覆盖）
+        const h = el.offsetHeight;
+        if (h < 40) { pending++; continue; }      // 渲染未提交完：再等一帧重试
+        heights.set(n.id, h);   // 量真实高度，传给 relayoutNodes 做同列累加排版（防纵向重叠）
       }
-      if (retry && tries < 15) {
+      if (pending && tries < 60) {   // 大图渲染慢（aimh_core 251 节点），上限 15 → 60 帧
         tries += 1;
         requestAnimationFrame(run);
         return;
       }
-      setNodes(nds.length ? relayoutNodes(nds, edgesRef.current) : nds);
+      if (pending) {
+        // 放弃等待：未提交完的节点按已量到的最大高兜底（宁大勿叠，回退小高会同列覆盖）
+        const maxH = heights.size ? Math.max(...heights.values()) : 110;
+        for (const n of nds) if (!heights.has(n.id) && !offDom.has(n.id)) heights.set(n.id, maxH);
+      }
+      // 只排版「真实挂载在 DOM」的节点：隐藏孤岛不占位（否则 L0 一列 101 个孤岛把列撑到 2 万 px）
+      const laid = nds.filter((n) => !offDom.has(n.id));
+      if (!laid.length) { setNodes(nds); setPendingRelayout(false); return; }
+      const laidNodes = relayoutNodes(laid, edgesRef.current, heights);
+      setNodes(laidNodes);
       setPendingRelayout(false);
-      requestAnimationFrame(() => rfInstance.current && rfInstance.current.fitView({ padding: 0.2 }));
+      // 视口自管（弃 reactflow fitView 黑盒）：bbox 从排版结果直接算，中心=图中心（≈原点），确定性无污染——
+      // fitView 曾被 JSON 旧极值坐标 / minimap bbox 正反馈牵着走（zoom 压到 minZoom 0.05、中心漂到 x≈9 万）。
+      // 节点宽 260 与 relayoutNodes 的 NODE_W、.ff-node CSS 宽一致。
+      requestAnimationFrame(() => {
+        if (!rfInstance.current || !wrapperRef.current) return;
+        let mnX = 1e9, mxX = -1e9, mnY = 1e9, mxY = -1e9;
+        for (const n of laidNodes) {
+          const h = heights.get(n.id) || 110;
+          mnX = Math.min(mnX, n.position.x); mxX = Math.max(mxX, n.position.x + 260);
+          mnY = Math.min(mnY, n.position.y); mxY = Math.max(mxY, n.position.y + h);
+        }
+        const wr = wrapperRef.current.getBoundingClientRect();
+        const zoom = Math.max(Math.min(wr.width / Math.max(mxX - mnX, 1), wr.height / Math.max(mxY - mnY, 1), 1) * 0.85, 0.1);
+        rfInstance.current.setViewport({
+          x: wr.width / 2 - ((mnX + mxX) / 2) * zoom,
+          y: wr.height / 2 - ((mnY + mxY) / 2) * zoom,
+          zoom,
+        });
+      });
+      // 覆盖框与视口的同步交给下方 MutationObserver：mask 的 d 一变，覆盖框立刻重算。
     };
     const t = setTimeout(run, 120);
     return () => { cancelled = true; clearTimeout(t); };
@@ -926,6 +1056,21 @@ function FlowCanvas() {
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, [updateMiniFrame]);
+
+  /* MiniMap mask 的 d 属性一变，覆盖框立刻跟着重算——声明式同步，不猜时机。
+     fitView / setViewport / 标签切换都是程序性视口变更，不触发 Flow 的 onMove；
+     此前只靠 onMove/nodes/resize 触发，框就会停在旧解读上（图越大偏移越大，
+     core ±10590px 直接露馅）。graphKey/hasFlow 进依赖：Flow 重挂载后 mask 是
+     新元素需重建 observer；空画布无 mask，导入后再挂。 */
+  useEffect(() => {
+    const wrap = wrapperRef.current;
+    if (!wrap) return;
+    const mask = wrap.querySelector(".react-flow__minimap-mask");
+    if (!mask) return;
+    const obs = new MutationObserver(() => requestAnimationFrame(updateMiniFrame));
+    obs.observe(mask, { attributes: true, attributeFilter: ["d"] });
+    return () => obs.disconnect();
+  }, [graphKey, hasFlow, updateMiniFrame]);
 
   /* 导出内容：聚焦时只导聚焦子图（±FOCUS_HOPS 相关函数块 + intent 设计文本），非聚焦导全量 */
   const exportFlow = useCallback(() => {

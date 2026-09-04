@@ -327,8 +327,6 @@ def main():
     ap.add_argument("--hops", type=int, default=1, help="子图 BFS 跳数（默认 1，配合 --focus）")
     ap.add_argument("--dir", choices=("down", "up", "both"), default="down",
                     help="子图扩展方向：down=下游被调 / up=上游调用方 / both（默认 down）")
-    ap.add_argument("--strip-position", action="store_true",
-                    help="AI 消费形态：position 置 null（画布布局对改码是噪声，剥离省 token）")
     args = ap.parse_args()
 
     target = Path(args.target)
@@ -381,7 +379,6 @@ def main():
         nodes.append({
             "id": nid,
             "type": "function",
-            "position": None,
             "data": {
                 "function": d["name"],
                 "file": d["file"],
@@ -486,46 +483,6 @@ def main():
         nodes = [n for n in nodes if n["id"] in keep]
         edges = [e for e in edges if e["from"] in keep and e["to"] in keep]
 
-    # 布局：调用图最长路径分列，列内居中（语言无关）。
-    # 环安全：真实代码存在惰性初始化环（如 _conn↔_init_db），朴素松弛会让层级每轮 +1 无限涨，
-    # 把图撑到数万像素宽。改用「入边方向最长路径 + 回边不计深度」递归，环只差 1 列。
-    radj = {n["id"]: [] for n in nodes}
-    for e in edges:
-        radj[e["to"]].append(e["from"])
-    import sys as _sys
-    _sys.setrecursionlimit(max(1000, len(nodes) * 4))
-    _memo = {}
-
-    def _lvl(u, seen):
-        if u in _memo:
-            return _memo[u]
-        if u in seen:                      # 环：回边不计入深度
-            return 0
-        seen = seen | {u}
-        best = 0
-        for p in radj[u]:
-            v = _lvl(p, seen)
-            if v + 1 > best:
-                best = v + 1
-        _memo[u] = best
-        return best
-
-    level = {n["id"]: _lvl(n["id"], set()) for n in nodes}
-    layers = {}
-    for n in nodes:
-        layers.setdefault(level[n["id"]], []).append(n)
-    GAP_X, GAP_Y, BASE_Y = 250, 210, 250
-    for lv in sorted(layers):
-        group = sorted(layers[lv], key=lambda n: n["data"]["line"])
-        for i, n in enumerate(group):
-            n["position"] = {
-                "x": 40 + lv * GAP_X,
-                "y": int(BASE_Y + (i - (len(group) - 1) / 2) * GAP_Y),
-            }
-
-    if args.strip_position:
-        for n in nodes:
-            n["position"] = None
     payload = {
         "schema": "functionflow/v1",
         "generatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),

@@ -26,7 +26,7 @@ python extract_flow_ts.py <你的源码目录> --dir up --focus <函数>       #
 
 > ast 版**只能解析 Python**（解析器是 Python 内置的 `ast` 模块）；要提取 JavaScript / TypeScript 源码，用 Tree-sitter 版。
 
-产出的 JSON 拖进画布即可开图。`--strip-position` 仍兼容保留，但画布导出已不携带坐标，一般无需使用。
+产出的 JSON 拖进画布即可开图。产物不含坐标——布局由画布按调用图实时计算。
 
 Tree-sitter 版为可选扩展，如需提取 JS/TS：`pip install -r requirements.txt`
 

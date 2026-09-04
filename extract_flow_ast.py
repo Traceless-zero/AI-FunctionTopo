@@ -145,8 +145,6 @@ def main():
     ap.add_argument("--hops", type=int, default=1, help="子图 BFS 跳数（默认 1，配合 --focus）")
     ap.add_argument("--dir", choices=("down", "up", "both"), default="down",
                     help="子图扩展方向：down=下游被调 / up=上游调用方 / both（默认 down）")
-    ap.add_argument("--strip-position", action="store_true",
-                    help="AI 消费形态：position 置 null（画布布局对改码是噪声，剥离省 token）")
     args = ap.parse_args()
 
     target = Path(args.target)
@@ -186,7 +184,6 @@ def main():
         nodes.append({
             "id": nid,
             "type": "function",
-            "position": None,  # 布局阶段回填
             "data": {
                 "function": d["name"],
                 "file": d["file"],
@@ -293,31 +290,6 @@ def main():
         nodes = [n for n in nodes if n["id"] in keep]
         edges = [e for e in edges if e["from"] in keep and e["to"] in keep]
 
-    # ---- 布局：调用图最长路径分列，列内居中 ----
-    level = {n["id"]: 0 for n in nodes}
-    for _ in range(len(nodes) + 1):
-        changed = False
-        for e in edges:
-            if level[e["to"]] < level[e["from"]] + 1:
-                level[e["to"]] = level[e["from"]] + 1
-                changed = True
-        if not changed:
-            break
-    layers = {}
-    for n in nodes:
-        layers.setdefault(level[n["id"]], []).append(n)
-    GAP_X, GAP_Y, BASE_Y = 360, 280, 250
-    for lv in sorted(layers):
-        group = sorted(layers[lv], key=lambda n: n["data"]["line"])
-        for i, n in enumerate(group):
-            n["position"] = {
-                "x": 40 + lv * GAP_X,
-                "y": int(BASE_Y + (i - (len(group) - 1) / 2) * GAP_Y),
-            }
-
-    if args.strip_position:
-        for n in nodes:
-            n["position"] = None
     payload = {
         "schema": "functionflow/v1",
         "generatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
